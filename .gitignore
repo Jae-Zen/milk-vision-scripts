@@ -1,0 +1,28 @@
+# Python environments and generated caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Credentials and machine-local/editor files
+.env
+.env.*
+.vscode/
+tempCodeRunnerFile.py
+.DS_Store
+Thumbs.db
+
+# Generated diagnostics, media, weights, datasets and resumable labeling state
+diagnostics/
+runs/
+*_tracking_debug.csv
+*.state.json
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.pt
+*.pth
+*.onnx
+*.zip

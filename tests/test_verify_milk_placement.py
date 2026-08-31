@@ -1,0 +1,430 @@
+from __future__ import annotations
+
+import contextlib
+import csv
+import io
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS_DIR))
+import verify_milk_placement as verifier
+
+
+def detection(track_id, frame, center_y, confidence=0.9, class_name="milk"):
+    return verifier.TrackedDetection(
+        class_name, track_id, frame,
+        verifier.BoundingBox(100, center_y - 10, 140, center_y + 10), confidence,
+    )
+
+
+class CrossingDetectorTests(unittest.TestCase):
+    def make_detector(self, max_gap_frames=5, **kwargs):
+        return verifier.CrossingDetector(
+            gate_y=0.20, hysteresis=0.04, confirm_observations=2,
+            max_gap_frames=max_gap_frames, **kwargs,
+        )
+
+    def test_hysteresis_confirms_once_and_ignores_jitter(self):
+        gate = self.make_detector()
+        events = [
+            event for frame, y in enumerate([100, 110, 190, 205, 290, 300, 310])
+            if (event := gate.observe(detection(1, frame, y), 1000)) is not None
+        ]
+        self.assertEqual([verifier.CrossingEvent("milk", 1, verifier.INWARD, 5)], events)
+
+    def test_round_trip_emits_inward_then_outward(self):
+        gate = self.make_detector()
+        events = [
+            event for frame, y in enumerate([100, 100, 300, 300, 100, 100])
+            if (event := gate.observe(detection(1, frame, y), 1000)) is not None
+        ]
+        self.assertEqual([verifier.INWARD, verifier.OUTWARD], [e.direction for e in events])
+        self.assertEqual(0, verifier.calculate_net_delta(events))
+
+    def test_brief_gap_preserves_state(self):
+        gate = self.make_detector()
+        for frame, y in [(0, 100), (1, 100), (4, 300)]:
+            self.assertIsNone(gate.observe(detection(1, frame, y), 1000))
+        self.assertEqual(verifier.INWARD, gate.observe(detection(1, 5, 300), 1000).direction)
+
+    def test_long_gap_resets_before_observing(self):
+        gate = self.make_detector(max_gap_frames=2)
+        gate.observe(detection(1, 0, 100), 1000)
+        gate.observe(detection(1, 1, 100), 1000)
+        result = gate.observe_detailed(detection(1, 10, 300), 1000)
+        self.assertEqual("tracking_gap", result.state_reset_reason)
+        self.assertIsNone(result.stable_zone_before)
+        self.assertIsNone(gate.observe(detection(1, 11, 300), 1000))
+
+    def test_expire_discards_missing_track(self):
+        gate = self.make_detector(max_gap_frames=2)
+        gate.observe(detection(1, 0, 100), 1000)
+        gate.observe(detection(1, 1, 100), 1000)
+        gate.expire(4)
+        self.assertNotIn(("milk", 1), gate._states)
+
+    def test_track_id_change_does_not_inherit_side(self):
+        gate = self.make_detector()
+        gate.observe(detection(1, 0, 100), 1000)
+        gate.observe(detection(1, 1, 100), 1000)
+        self.assertIsNone(gate.observe(detection(2, 2, 300), 1000))
+        self.assertIsNone(gate.observe(detection(2, 3, 300), 1000))
+
+    def test_initial_inner_side_is_not_an_inward_crossing(self):
+        gate = self.make_detector()
+        for frame, y in enumerate([200, 220, 300, 310, 320]):
+            self.assertIsNone(gate.observe(detection(1, frame, y), 1000))
+        self.assertEqual(verifier.INNER, gate._states[("milk", 1)].stable_zone)
+
+    def test_low_confidence_never_initializes_a_side(self):
+        gate = self.make_detector()
+        for frame, y in enumerate([100, 100, 300, 300]):
+            result = gate.observe_detailed(detection(1, frame, y, 0.3999), 1000)
+            self.assertFalse(result.crossing_eligible)
+            self.assertIsNone(result.observed_zone)
+            self.assertIsNone(result.stable_zone_after)
+            self.assertEqual(0, result.candidate_count)
+            self.assertIsNone(result.event)
+
+    def test_exact_confidence_threshold_is_accepted(self):
+        gate = self.make_detector()
+        for frame, y in enumerate([100, 100, 300, 300]):
+            result = gate.observe_detailed(detection(1, frame, y, 0.40), 1000)
+            self.assertTrue(result.crossing_eligible)
+        self.assertEqual(verifier.INWARD, result.event.direction)
+
+    def test_weak_observations_do_not_increment_or_cancel_candidates(self):
+        gate = self.make_detector()
+        gate.observe(detection(1, 0, 100), 1000)
+        gate.observe(detection(1, 1, 100), 1000)
+        candidate = gate.observe_detailed(detection(1, 2, 300), 1000)
+        self.assertEqual(1, candidate.candidate_count)
+        for frame, y in [(3, 300), (4, 100)]:
+            weak = gate.observe_detailed(detection(1, frame, y, 0.18), 1000)
+            self.assertEqual(verifier.OUTER, weak.stable_zone_after)
+            self.assertEqual(verifier.INNER, weak.candidate_zone)
+            self.assertEqual(1, weak.candidate_count)
+            self.assertIsNone(weak.event)
+        self.assertEqual(verifier.INWARD, gate.observe(detection(1, 5, 300), 1000).direction)
+
+    def test_weak_matches_keep_track_alive_across_short_confidence_gap(self):
+        gate = self.make_detector(max_gap_frames=2, max_evidence_gap_frames=6)
+        for frame, y, conf in [
+            (0, 100, .9), (1, 100, .9),
+            (2, 300, .18), (3, 300, .18), (4, 300, .18),
+            (5, 300, .9), (6, 300, .9),
+        ]:
+            event = gate.observe(detection(1, frame, y, conf), 1000)
+            gate.expire(frame)
+            if frame < 6:
+                self.assertIsNone(event)
+        self.assertEqual(verifier.INWARD, event.direction)
+
+    def test_prolonged_weak_matches_reset_confident_history(self):
+        gate = self.make_detector(max_gap_frames=2, max_evidence_gap_frames=4)
+        gate.observe(detection(1, 0, 100), 1000)
+        gate.observe(detection(1, 1, 100), 1000)
+        for frame in range(2, 7):
+            result = gate.observe_detailed(detection(1, frame, 300, .18), 1000)
+            gate.expire(frame)
+            self.assertIsNone(result.event)
+        self.assertEqual("confident_evidence_gap", result.state_reset_reason)
+        self.assertIsNone(result.stable_zone_after)
+        self.assertIsNone(gate.observe(detection(1, 7, 300), 1000))
+        self.assertIsNone(gate.observe(detection(1, 8, 300), 1000))
+
+    def test_confident_return_to_stable_side_cancels_candidate(self):
+        gate = self.make_detector()
+        for frame, y in enumerate([100, 100, 300, 100]):
+            result = gate.observe_detailed(detection(1, frame, y), 1000)
+        self.assertEqual(0, result.candidate_count)
+        self.assertIsNone(result.candidate_zone)
+
+    def test_three_qualifying_observations_per_side(self):
+        gate = verifier.CrossingDetector(.2, .04, 3, 15)
+        for frame, y in enumerate([100, 100, 100, 300, 200, 300, 200, 300]):
+            result = gate.observe_detailed(detection(1, frame, y), 1000)
+            if frame < 7:
+                self.assertIsNone(result.event)
+        self.assertEqual(7, result.event.frame_index)
+
+    def test_non_milk_and_invalid_confidence_are_rejected(self):
+        gate = self.make_detector()
+        with self.assertRaises(ValueError):
+            gate.observe(detection(1, 0, 100, class_name="hand"), 1000)
+        for conf in [-.1, 1.1, float("nan")]:
+            with self.subTest(conf=conf), self.assertRaises(ValueError):
+                gate.observe(detection(1, 0, 100, conf), 1000)
+
+
+class NetDeltaTests(unittest.TestCase):
+    def event(self, direction, frame=0, track=1):
+        return verifier.CrossingEvent("milk", track, direction, frame)
+
+    def test_empty_is_zero(self):
+        self.assertEqual(0, verifier.calculate_net_delta([]))
+
+    def test_single_inward_counts_without_a_later_exit(self):
+        self.assertEqual(1, verifier.calculate_net_delta([self.event(verifier.INWARD)]))
+
+    def test_initial_outward_counts_without_a_prior_entry(self):
+        self.assertEqual(-1, verifier.calculate_net_delta([self.event(verifier.OUTWARD)]))
+
+    def test_vid_11_removal_then_replacement_with_different_ids_is_zero(self):
+        events = [self.event(verifier.OUTWARD, 141, 9), self.event(verifier.INWARD, 198, 13)]
+        self.assertEqual(0, verifier.calculate_net_delta(events))
+
+    def test_two_independent_inward_events_count_twice(self):
+        self.assertEqual(2, verifier.calculate_net_delta([
+            self.event(verifier.INWARD, 10, 1), self.event(verifier.INWARD, 11, 2),
+        ]))
+
+    def test_invalid_direction_and_non_milk_are_rejected(self):
+        for event in [self.event("sideways"), verifier.CrossingEvent("hand", 1, verifier.INWARD, 0)]:
+            with self.subTest(event=event), self.assertRaises(ValueError):
+                verifier.calculate_net_delta([event])
+
+
+class FakeTensor:
+    def __init__(self, values):
+        self.values = values
+
+    def int(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def tolist(self):
+        return self.values
+
+
+class FakeBoxes:
+    def __init__(self, detections, with_ids=True):
+        self.id = FakeTensor([d.track_id for d in detections]) if with_ids else None
+        self.cls = FakeTensor([4 if d.class_name == "milk" else 7 for d in detections])
+        self.conf = FakeTensor([d.confidence for d in detections])
+        self.xyxy = FakeTensor([[d.box.x1, d.box.y1, d.box.x2, d.box.y2] for d in detections])
+        self.count = len(detections)
+
+    def __len__(self):
+        return self.count
+
+
+class ExtractionAndDiagnosticsTests(unittest.TestCase):
+    def test_extraction_keeps_weak_milk_for_liveness_but_excludes_hand(self):
+        milk = detection(1, 0, 100, .18)
+        result = SimpleNamespace(boxes=FakeBoxes([milk, detection(2, 0, 100, class_name="hand")]))
+        self.assertEqual([milk], verifier._extract_tracked_detections(result, 0, 4))
+
+    def test_unconfirmed_or_missing_boxes_produce_no_observations(self):
+        for boxes in [None, FakeBoxes([]), FakeBoxes([detection(1, 0, 100)], with_ids=False)]:
+            with self.subTest(boxes=boxes):
+                self.assertEqual([], verifier._extract_tracked_detections(SimpleNamespace(boxes=boxes), 0, 4))
+
+    def test_debug_csv_explicitly_marks_tracking_only(self):
+        gate = verifier.CrossingDetector(.2, .04, 3, 15)
+        milk = detection(1, 10, 100, .18)
+        observation = gate.observe_detailed(milk, 1000)
+        rows = verifier.build_frame_debug_rows(10, 30, 1000, [milk], {("milk", 1): observation})
+        self.assertFalse(rows[0]["crossing_eligible"])
+        self.assertEqual("tracking_only", rows[0]["observation_use"])
+        self.assertEqual("", rows[0]["observed_zone"])
+        self.assertEqual("", rows[0]["emitted_crossing_direction"])
+        self.assertNotIn("associated_track_ids", rows[0])
+        self.assertEqual(set(verifier.DEBUG_CSV_FIELDS), set(rows[0]))
+
+    def test_empty_debug_frame_is_preserved(self):
+        row = verifier.build_frame_debug_rows(11, 20, 1000, [], {})[0]
+        self.assertEqual(0, row["detection_count"])
+        self.assertEqual(.55, row["timestamp_seconds"])
+
+    def test_debug_summary_only_contains_sorted_milk_events(self):
+        output = io.StringIO()
+        verifier.print_debug_summary(
+            stream=output, video_path=Path("video.mp4"), model_path=Path("model.pt"),
+            fps=30, confidence=.4, tracking_confidence=.1, gate_y=.2,
+            confirm_observations=3, max_gap_frames=15, max_evidence_gap_frames=30,
+            milk_events=[verifier.CrossingEvent("milk", 2, verifier.INWARD, 198),
+                         verifier.CrossingEvent("milk", 1, verifier.OUTWARD, 141)],
+            net_delta=0, csv_path=Path("debug.csv"), video_debug_path=Path("debug.mp4"),
+        )
+        summary = output.getvalue()
+        self.assertLess(summary.index("frame_index=141"), summary.index("frame_index=198"))
+        self.assertIn("tracking_confidence=0.100 crossing_confidence=0.400", summary)
+        self.assertIn("DEBUG RESULT net_delta=0", summary)
+        self.assertNotIn("HAND", summary)
+
+
+class VerifyVideoIntegrationTests(unittest.TestCase):
+    def run_video(self, rows, *, debug=False, fps=30.0, names=None, **kwargs):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video, model_path = root / "input.mp4", root / "model.pt"
+            video.touch()
+            model_path.touch()
+            frame = SimpleNamespace(shape=(1000, 1000, 3))
+            capture = mock.Mock()
+            capture.isOpened.return_value = True
+            capture.get.return_value = fps
+            capture.read.side_effect = [(True, frame) for _ in rows] + [(False, None)]
+            cv2 = mock.Mock()
+            cv2.VideoCapture.return_value = capture
+            cv2.VideoWriter.return_value.isOpened.return_value = True
+            model = mock.Mock()
+            model.names = {4: "milk"} if names is None else names
+            model.track.side_effect = [[SimpleNamespace(boxes=FakeBoxes(ds))] for ds in rows]
+            yolo = mock.Mock(return_value=model)
+            with mock.patch.dict(sys.modules, {"cv2": cv2, "ultralytics": SimpleNamespace(YOLO=yolo)}):
+                with mock.patch.object(verifier, "_draw_debug_frame", return_value=frame):
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        try:
+                            net = verifier.verify_video(
+                                video, model_path, debug=debug, debug_dir=root / "debug", **kwargs
+                            )
+                        finally:
+                            self.assertTrue(capture.release.called)
+            debug_rows = []
+            if debug:
+                with (root / "debug" / "input_tracking_debug.csv").open(newline="") as handle:
+                    debug_rows = list(csv.DictReader(handle))
+                self.assertTrue(cv2.VideoWriter.return_value.release.called)
+            return net, model, debug_rows
+
+    def test_milk_only_pipeline_uses_two_thresholds(self):
+        rows = [[detection(1, i, y, conf)] for i, (y, conf) in enumerate(
+            [(100, .9)] * 3 + [(300, .18)] * 3 + [(300, .9)] * 3
+        )]
+        net, model, debug_rows = self.run_video(rows, debug=True)
+        self.assertEqual(1, net)
+        for call in model.track.call_args_list:
+            self.assertEqual(.1, call.kwargs["conf"])
+            self.assertEqual([4], call.kwargs["classes"])
+            self.assertEqual(str(verifier.TRACKER_CONFIG), call.kwargs["tracker"])
+            self.assertTrue(call.kwargs["persist"])
+        for row in debug_rows[3:6]:
+            self.assertEqual("False", row["crossing_eligible"])
+            self.assertEqual("tracking_only", row["observation_use"])
+            self.assertEqual("", row["emitted_crossing_direction"])
+            self.assertEqual("0", row["candidate_count"])
+        event_rows = [r for r in debug_rows if r["emitted_crossing_direction"]]
+        self.assertEqual(["8"], [r["frame_index"] for r in event_rows])
+
+    def test_initial_outward_is_counted_without_a_hand_class(self):
+        rows = [[detection(1, i, y)] for i, y in enumerate([300] * 3 + [100] * 3)]
+        self.assertEqual(-1, self.run_video(rows)[0])
+
+    def test_weak_crossing_alone_cannot_change_inventory(self):
+        rows = [[detection(1, i, y, conf)] for i, (y, conf) in enumerate(
+            [(100, .9)] * 3 + [(300, .18)] * 3 + [(100, .9)] * 3
+        )]
+        self.assertEqual(0, self.run_video(rows)[0])
+
+    def test_no_frames_is_an_error_not_zero(self):
+        with self.assertRaisesRegex(verifier.VerificationError, "No frames"):
+            self.run_video([])
+
+    def test_missing_milk_class_and_invalid_fps_release_capture(self):
+        with self.assertRaisesRegex(verifier.VerificationError, "milk"):
+            self.run_video([], names={7: "hand"})
+        with self.assertRaisesRegex(verifier.VerificationError, "FPS"):
+            self.run_video([], fps=float("nan"))
+
+
+class ByteTrackConfidenceTests(unittest.TestCase):
+    def test_actual_tracker_uses_weak_matches_but_does_not_start_weak_tracks(self):
+        try:
+            import numpy as np
+            import yaml
+            from ultralytics.engine.results import Boxes
+            from ultralytics.trackers.byte_tracker import BYTETracker
+        except ImportError:
+            self.skipTest("Optional inference dependencies are not installed")
+        with verifier.TRACKER_CONFIG.open() as handle:
+            config = SimpleNamespace(**yaml.safe_load(handle))
+        self.assertEqual(.4, config.new_track_thresh)
+        self.assertEqual(.25, config.track_high_thresh)
+        self.assertEqual(.1, config.track_low_thresh)
+        tracker = BYTETracker(config)
+
+        def update(rows):
+            return tracker.update(Boxes(np.asarray(rows, dtype=np.float32), orig_shape=(1000, 1000)))
+
+        strong = update([[100, 100, 200, 200, .9, 4]])
+        track_id = strong[0, 4]
+        weak = update([[100, 100, 200, 200, .18, 4], [600, 600, 700, 700, .3, 4]])
+        self.assertEqual(1, len(weak))
+        self.assertEqual(track_id, weak[0, 4])
+        self.assertAlmostEqual(.18, weak[0, 5], places=5)
+        strong_again = update([[100, 100, 200, 200, .9, 4]])
+        self.assertEqual(track_id, strong_again[0, 4])
+
+
+class ValidationTests(unittest.TestCase):
+    def test_only_milk_class_is_required(self):
+        self.assertEqual(4, verifier.resolve_milk_class_id({4: " Milk "}))
+        self.assertEqual(4, verifier.resolve_milk_class_id({4: "Milk", 7: "HAND"}))
+        with self.assertRaises(verifier.VerificationError):
+            verifier.resolve_milk_class_id({7: "hand"})
+
+    def test_defaults_and_overrides(self):
+        args = verifier.parse_args(["--video", "unused.mp4"])
+        self.assertEqual(.4, args.conf)
+        self.assertEqual(.1, args.track_conf)
+        args = verifier.parse_args(["--video", "unused.mp4", "--conf", ".6", "--track-conf", ".12"])
+        self.assertEqual((.6, .12), (args.conf, args.track_conf))
+
+    def test_invalid_threshold_relationship_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dummy"
+            path.touch()
+            for conf in [0, .5, float("nan")]:
+                with self.subTest(conf=conf), self.assertRaisesRegex(verifier.VerificationError, "Tracking confidence"):
+                    verifier.verify_video(path, path, confidence=.4, tracking_confidence=conf)
+
+    def test_frame_conversion_requires_three_hits_at_this_video_fps(self):
+        self.assertEqual(3, verifier._seconds_to_frames(.1, 30.015571988475223, minimum=2))
+        self.assertEqual(2, verifier._seconds_to_frames(.1, 5, minimum=2))
+
+    def test_invalid_video_keeps_stdout_empty(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = verifier.main(["--video", str(SCRIPTS_DIR / "definitely_missing_video.mp4")])
+        self.assertEqual(1, code)
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("ERROR:", stderr.getvalue())
+
+    def test_cli_preserves_signed_integer_output(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(verifier, "verify_video", return_value=-1) as verify:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = verifier.main(["--video", "unused.mp4"])
+        self.assertEqual(0, code)
+        self.assertEqual("-1\n", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+        self.assertFalse(verify.call_args.kwargs["debug"])
+        self.assertEqual(.4, verify.call_args.kwargs["confidence"])
+        self.assertEqual(.1, verify.call_args.kwargs["tracking_confidence"])
+
+    def test_debug_cli_keeps_summary_off_stdout(self):
+        def fake_verify(**kwargs):
+            self.assertTrue(kwargs["debug"])
+            self.assertEqual(Path("diagnostics"), kwargs["debug_dir"])
+            print("DEBUG RESULT net_delta=0", file=sys.stderr)
+            return 0
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(verifier, "verify_video", side_effect=fake_verify):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = verifier.main(["--video", "unused.mp4", "--debug", "--debug-dir", "diagnostics"])
+        self.assertEqual(0, code)
+        self.assertEqual("0\n", stdout.getvalue())
+        self.assertIn("net_delta=0", stderr.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
