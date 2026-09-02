@@ -19,7 +19,7 @@ from typing import Any, TextIO
 # launched from another directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v2.pt"
-TRACKER_CONFIG = Path(__file__).resolve().with_name("milk_bytetrack.yaml")
+TRACKER_CONFIG = Path(__file__).resolve().with_name("milk_botsort.yaml")
 TRACKING_CONFIDENCE = 0.10
 CROSSING_CONFIDENCE = 0.40
 
@@ -90,7 +90,7 @@ class BoundingBox:
 
 @dataclass(frozen=True)
 class TrackedDetection:
-    # One YOLO box with ByteTrack's persistent identity attached.
+    # One YOLO box with the tracker's persistent identity attached.
     class_name: str
     track_id: int
     frame_index: int
@@ -616,7 +616,7 @@ def verify_video(
     if not 0.05 <= gate_y <= 0.95:
         raise VerificationError("Gate position must be between 0.05 and 0.95.")
     if not TRACKER_CONFIG.is_file():
-        raise VerificationError(f"ByteTrack configuration does not exist: {TRACKER_CONFIG}")
+        raise VerificationError(f"BoT-SORT configuration does not exist: {TRACKER_CONFIG}")
 
     # Delay heavyweight optional imports until verification is actually requested.
     try:
@@ -688,7 +688,7 @@ def verify_video(
                 debug_csv_handle.close()
             raise VerificationError(f"Could not create debug CSV {debug_csv_path}: {exc}") from exc
 
-    # persist=True is what allows ByteTrack to retain identities across these
+    # persist=True is what allows BoT-SORT to retain identities across these
     # separate, one-frame model.track() calls.
     track_arguments: dict[str, Any] = {
         "persist": True,
@@ -856,7 +856,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--track-conf",
         type=lambda value: _bounded_float(value, 0.0, 1.0, "tracking confidence"),
         default=TRACKING_CONFIDENCE,
-        help="YOLO threshold feeding ByteTrack; must be positive and <= --conf (default: 0.10)",
+        help="YOLO threshold feeding BoT-SORT; must be positive and <= --conf (default: 0.10)",
     )
     parser.add_argument(
         "--gate-y",

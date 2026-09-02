@@ -336,13 +336,13 @@ class VerifyVideoIntegrationTests(unittest.TestCase):
             self.run_video([], fps=float("nan"))
 
 
-class ByteTrackConfidenceTests(unittest.TestCase):
+class BoTSORTConfidenceTests(unittest.TestCase):
     def test_actual_tracker_uses_weak_matches_but_does_not_start_weak_tracks(self):
         try:
             import numpy as np
             import yaml
             from ultralytics.engine.results import Boxes
-            from ultralytics.trackers.byte_tracker import BYTETracker
+            from ultralytics.trackers.bot_sort import BOTSORT
         except ImportError:
             self.skipTest("Optional inference dependencies are not installed")
         with verifier.TRACKER_CONFIG.open() as handle:
@@ -350,7 +350,7 @@ class ByteTrackConfidenceTests(unittest.TestCase):
         self.assertEqual(.4, config.new_track_thresh)
         self.assertEqual(.25, config.track_high_thresh)
         self.assertEqual(.1, config.track_low_thresh)
-        tracker = BYTETracker(config)
+        tracker = BOTSORT(config)
 
         def update(rows):
             return tracker.update(Boxes(np.asarray(rows, dtype=np.float32), orig_shape=(1000, 1000)))

@@ -36,7 +36,7 @@ python -m pip install --upgrade pip
 python -m pip install -r Scripts/requirements.txt
 ```
 
-`requirements.txt` installs Ultralytics 8.x and its ByteTrack assignment solver. Ultralytics also supplies the other packages needed by these scripts, including PyTorch, NumPy, and OpenCV.
+`requirements.txt` installs Ultralytics 8.x and its tracker assignment solver. Ultralytics also supplies the other packages needed by these scripts, including PyTorch, NumPy, and OpenCV.
 
 ## `auto_label_milk_dataset.py`
 
@@ -476,22 +476,24 @@ python .\Scripts\verify_milk_placement.py `
 
 ### Two confidence thresholds
 
-- `--track-conf 0.10` controls which YOLO milk detections reach ByteTrack.
+- `--track-conf 0.10` controls which YOLO milk detections reach BoT-SORT.
 - `--conf 0.40` controls which tracked detections can supply crossing evidence.
 - A matched detection below `--conf` updates only track liveness, not the stable
   zone, candidate zone/count, or net delta.
 - Milk boxes without a confirmed tracker ID cannot supply crossing observations.
 - The checkpoint needs only a class named `milk` (case-insensitive); the inference
-  class filter prevents other classes from reaching ByteTrack.
+  class filter prevents other classes from reaching BoT-SORT.
 
-The bundled `milk_bytetrack.yaml` uses high/low matching thresholds of `0.25` and
-`0.10`, a `new_track_thresh` of `0.40`, and a 30-frame lost-track buffer.
+The bundled `milk_botsort.yaml` uses high/low matching thresholds of `0.25` and
+`0.10`, a `new_track_thresh` of `0.40`, and a 30-frame lost-track buffer. It
+disables global motion compensation because the camera is fixed and disables
+appearance re-identification because this is a milk-only crossing task.
 The new-track threshold is a separate tracker setting: changing `--conf` changes
 crossing acceptance, not the YAML's new-track threshold. A weak match can maintain
 an established ID, but does not create a new tentative track below `0.40`.
 
 The script requires `0 < --track-conf <= --conf <= 1`. Raising `--track-conf` above
-the low-confidence interval removes ByteTrack's opportunity to use weak matches.
+the low-confidence interval removes BoT-SORT's opportunity to use weak matches.
 
 ### Gate confirmation and timeouts
 
@@ -514,7 +516,7 @@ Track liveness and confident evidence have separate timeouts:
 | `EVIDENCE_GAP_SECONDS` | `1.00` | Reset gate history after this gap without a confident milk observation, even if weak matches continue. |
 
 At 30 FPS those gaps are 15 and 30 frames. After a reset, the next confirmed side
-initializes history; it does not invent a crossing. ByteTrack has its own separate
+initializes history; it does not invent a crossing. BoT-SORT has its own separate
 30-frame lost-ID buffer.
 
 ### Debugging
@@ -570,7 +572,7 @@ than being reported as zero inventory change.
 | `--video PATH` | Required | Input video. |
 | `--model PATH` | `Models/milk-vision-v2.pt` | Checkpoint containing a milk class. |
 | `--conf FLOAT` | `0.40` | Minimum confidence for crossing observations. |
-| `--track-conf FLOAT` | `0.10` | Lower detector threshold feeding ByteTrack. |
+| `--track-conf FLOAT` | `0.10` | Lower detector threshold feeding BoT-SORT. |
 | `--gate-y FLOAT` | `0.20` | Normalized gate position, from `0.05` to `0.95`. |
 | `--device VALUE` | Automatic | Ultralytics device such as `0` or `cpu`. |
 | `--debug` | Off | Write CSV and annotated video. |
@@ -584,7 +586,7 @@ python -m unittest discover -s Scripts/tests -v
 
 Tests cover signed milk counting, confidence gating, weak-match liveness,
 evidence timeouts, debug output, and the inference pipeline. An additional
-ByteTrack test exercises real low-score ID recovery when the inference
+BoT-SORT test exercises real low-score ID recovery when the inference
 dependencies are installed. The core logic tests do not require a model file.
 
 ## `mobileclip2_b.ts`
