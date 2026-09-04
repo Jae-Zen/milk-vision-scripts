@@ -262,7 +262,7 @@ class ExtractionAndDiagnosticsTests(unittest.TestCase):
 
 
 class VerifyVideoIntegrationTests(unittest.TestCase):
-    def run_video(self, rows, *, debug=False, fps=30.0, names=None, **kwargs):
+    def run_video(self, rows, *, debug=False, fps=30.0, names=None, stderr=None, **kwargs):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             video, model_path = root / "input.mp4", root / "model.pt"
@@ -282,7 +282,7 @@ class VerifyVideoIntegrationTests(unittest.TestCase):
             yolo = mock.Mock(return_value=model)
             with mock.patch.dict(sys.modules, {"cv2": cv2, "ultralytics": SimpleNamespace(YOLO=yolo)}):
                 with mock.patch.object(verifier, "_draw_debug_frame", return_value=frame):
-                    with contextlib.redirect_stderr(io.StringIO()):
+                    with contextlib.redirect_stderr(stderr if stderr is not None else io.StringIO()):
                         try:
                             net = verifier.verify_video(
                                 video, model_path, debug=debug, debug_dir=root / "debug", **kwargs
@@ -318,6 +318,25 @@ class VerifyVideoIntegrationTests(unittest.TestCase):
     def test_initial_outward_is_counted_without_a_hand_class(self):
         rows = [[detection(1, i, y)] for i, y in enumerate([300] * 3 + [100] * 3)]
         self.assertEqual(-1, self.run_video(rows)[0])
+
+    def test_crossing_events_print_once_with_frames_in_both_modes(self):
+        rows = [[detection(1, i, y)] for i, y in enumerate([300] * 3 + [100] * 3)]
+        for debug in (False, True):
+            with self.subTest(debug=debug):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    net, _, _ = self.run_video(rows, debug=debug, stderr=stderr)
+                self.assertEqual(-1, net)
+                self.assertEqual("", stdout.getvalue())
+                self.assertEqual(1, stderr.getvalue().count("CrossingEvent("))
+                self.assertIn("direction='outward', frame_index=5", stderr.getvalue())
+                self.assertEqual(debug, "DEBUG CONFIGURATION" in stderr.getvalue())
+
+    def test_no_crossings_prints_an_empty_list_without_debug(self):
+        stderr = io.StringIO()
+        net, _, _ = self.run_video([[], []], stderr=stderr)
+        self.assertEqual(0, net)
+        self.assertEqual("MILK EVENTS (0)\n  []\n", stderr.getvalue())
 
     def test_weak_crossing_alone_cannot_change_inventory(self):
         rows = [[detection(1, i, y, conf)] for i, (y, conf) in enumerate(

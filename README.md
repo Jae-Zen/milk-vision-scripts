@@ -463,8 +463,11 @@ python .\Scripts\verify_milk_placement.py `
   --video ".\Dataset\videos\milk_added.mp4"
 ```
 
-Successful stdout is exactly one integer line. Specify inference and evidence
-thresholds independently:
+Successful stdout is exactly one integer line. Every successful run also lists
+confirmed milk crossings on stderr, sorted by `frame_index`, including each
+event's track ID and direction. An empty list is shown if no crossings occur.
+Frame indices are zero-based. No debug files are created without `--debug`.
+Specify inference and evidence thresholds independently:
 
 ```powershell
 python .\Scripts\verify_milk_placement.py `
@@ -528,8 +531,9 @@ python .\Scripts\verify_milk_placement.py `
   --debug-dir ".\Scripts\diagnostics"
 ```
 
-Stdout stays a single integer. Configuration, sorted milk events, and net delta go
-to stderr. `--debug-dir` is optional; without it files are written beside this
+Stdout stays a single integer. Debug mode adds configuration and net delta to the
+crossing events already shown on stderr, without duplicating those events.
+`--debug-dir` is optional; without it files are written beside this
 script. Repeating a run overwrites the same debug filenames in that directory:
 
 ```text

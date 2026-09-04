@@ -18,7 +18,7 @@ from typing import Any, TextIO
 # working directory.  This keeps the default model path stable when the script is
 # launched from another directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v2.pt"
+DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v3.pt"
 TRACKER_CONFIG = Path(__file__).resolve().with_name("milk_botsort.yaml")
 TRACKING_CONFIDENCE = 0.10
 CROSSING_CONFIDENCE = 0.40
@@ -462,6 +462,20 @@ def _debug_artifact_paths(video_path: Path, debug_dir: Path | None = None) -> tu
     )
 
 
+def print_crossing_events(
+    *,
+    stream: TextIO,
+    milk_events: Sequence[CrossingEvent],
+    label: str = "MILK EVENTS",
+) -> None:
+    """List confirmed crossings with their track IDs, directions, and frame indices."""
+    print(f"{label} ({len(milk_events)})", file=stream)
+    if not milk_events:
+        print("  []", file=stream)
+    for event in sorted(milk_events, key=lambda event: event.frame_index):
+        print(f"  {event!r}", file=stream)
+
+
 def print_debug_summary(
     *,
     stream: TextIO,
@@ -499,11 +513,7 @@ def print_debug_summary(
         file=stream,
     )
 
-    print(f"DEBUG MILK EVENTS ({len(milk_events)})", file=stream)
-    if not milk_events:
-        print("  []", file=stream)
-    for event in sorted(milk_events, key=lambda event: event.frame_index):
-        print(f"  {event!r}", file=stream)
+    print_crossing_events(stream=stream, milk_events=milk_events, label="DEBUG MILK EVENTS")
 
     print(f"DEBUG RESULT net_delta={net_delta}", file=stream)
     print(f"DEBUG CSV {csv_path}", file=stream)
@@ -812,6 +822,8 @@ def verify_video(
             csv_path=debug_csv_path,
             video_debug_path=debug_video_path,
         )
+    else:
+        print_crossing_events(stream=sys.stderr, milk_events=milk_events)
     return net_delta
 
 
