@@ -764,7 +764,7 @@ def verify_video(
                     debug_csv_handle.flush()
 
                 if debug_video_writer is None:
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    fourcc = cv2.VideoWriter.fourcc(*"mp4v")
                     debug_video_writer = cv2.VideoWriter(
                         str(debug_video_path),
                         fourcc,
