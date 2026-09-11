@@ -18,7 +18,7 @@ from typing import Any, TextIO
 # working directory.  This keeps the default model path stable when the script is
 # launched from another directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v4.pt"
+DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v4s.pt"
 TRACKER_CONFIG = Path(__file__).resolve().with_name("milk_botsort.yaml")
 TRACKING_CONFIDENCE = 0.10
 CROSSING_CONFIDENCE = 0.40

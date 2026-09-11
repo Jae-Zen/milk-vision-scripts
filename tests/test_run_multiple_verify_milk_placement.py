@@ -45,10 +45,39 @@ class MainTests(unittest.TestCase):
 
             self.assertEqual(0, code)
             self.assertEqual(55, run.call_count)
-            processed = [Path(call.args[0][-1]).name for call in run.call_args_list]
+            processed = [
+                Path(call.args[0][call.args[0].index("--video") + 1]).name
+                for call in run.call_args_list
+            ]
             self.assertEqual(
                 [f"video_{index}.mp4" for index in range(55)], processed
             )
+
+    def test_forwards_selected_model_to_every_video(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "videos"
+            folder.mkdir()
+            (folder / "first.mp4").touch()
+            (folder / "second.mp4").touch()
+            model = root / "custom-model.pt"
+            model.touch()
+
+            completed = mock.Mock(returncode=0, stdout="0\n", stderr="")
+            with mock.patch.object(
+                runner.subprocess, "run", return_value=completed
+            ) as run:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = runner.main(
+                        ["--folder", str(folder), "--model", str(model)]
+                    )
+
+            self.assertEqual(0, code)
+            self.assertEqual(2, run.call_count)
+            for call in run.call_args_list:
+                command = call.args[0]
+                self.assertEqual("--model", command[-2])
+                self.assertEqual(str(model.resolve()), command[-1])
 
 
 if __name__ == "__main__":

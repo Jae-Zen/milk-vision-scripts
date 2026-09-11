@@ -1,6 +1,6 @@
 # Milk vision scripts
 
-This folder contains six Python utilities:
+This folder contains eight Python utilities:
 
 - `auto_label_milk_dataset.py` uses the trained milk/hand segmentation model to create a resumable, upload-ready Ultralytics dataset and ZIP archive.
 - `auto_label_milk_images.py` creates YOLO instance-segmentation labels and review images using a text-prompted YOLOE model.
@@ -8,6 +8,8 @@ This folder contains six Python utilities:
 - `yolo_segment.py` displays segmentation predictions from an existing segmentation model on images, videos, or cameras.
 - `verify_milk_placement.py` prints signed net milk change from milk-only crossings.
 - `run_multiple_verify_milk_placement.py` sequentially runs the verifier on every video in a folder.
+- `verify_milk_motion.py` estimates signed net milk motion from tracked vertical movement.
+- `run_multiple_verify_milk_motion.py` sequentially runs motion verification on every video in a folder.
 
 The standalone `auto_label_milk_video.py` has been removed. The verifier writes
 its own diagnostic video with `--debug`; it does not depend on a separate labeling
@@ -677,6 +679,169 @@ with code `2`. Neither is a successful integer result.
 | `--debug-dir PATH` | Beside script | Output directory for `--debug`. |
 
 Show the argument help with `python .\Scripts\verify_milk_placement.py --help`.
+
+## `verify_milk_motion.py` (experimental, no boundary lines)
+
+Estimate milk motion from per-object y-coordinate histories. This separate script
+does not change the gate-based verifier. Its output is a **motion-derived estimate**:
+vertical movement cannot by itself establish that an item crossed into the fridge
+or was released onto a shelf.
+
+```powershell
+.\.venv\Scripts\python.exe .\Scripts\verify_milk_motion.py `
+  --video ".\Dataset\videos\add_milk\milk_added.mp4"
+```
+
+The default checkpoint is `Models/milk-vision-v4n.pt`. Override it with `--model`;
+use `--device cpu` for CPU inference. Run `--help` for every option. This uses the
+existing dependencies from `Scripts/requirements.txt`. Matplotlib is only needed
+when `--debug` is enabled; ordinary runs create no CSV, JSON or PNG files.
+
+### Coordinate storage and regression
+
+1. Run YOLO's milk-only detector on every decoded frame at `--track-conf 0.10`,
+   then feed its boxes into the existing BoT-SORT configuration.
+2. Collect **all post-NMS detector boxes** in memory, including weak detections and boxes that
+   have no confirmed tracker ID. Retain `y1`, `y2`, midpoint y in pixels, normalized
+   midpoint y, confidence, time, frame index, and any matched track ID. These are
+   the original detector coordinates, not the tracker's Kalman-filtered boxes.
+3. Fit confident observations (`--conf 0.40`) separately for each track ID. Split
+   the history when confident observations are more than `--max-gap-seconds 0.50`
+   apart. Weak observations cannot bridge this evidence gap.
+4. Fit a local line `y(t) = a + b*t` in a centered `--window-seconds 0.60` window.
+   Use a univariate Theil-Sen estimate: median pairwise slope and median intercept.
+   At most 61 uniformly spaced observations determine the slope; all window
+   observations participate in residual checks. This avoids a new scikit-learn
+   dependency and bounds the pairwise calculation at high FPS.
+5. Require at least `--min-observations 5` inliers spanning `--min-fit-seconds 0.12`.
+   At least `--min-inlier-fraction 0.65` of the window must be within
+   `--residual-threshold 0.025` frame heights of the fitted line. The current
+   observation must also agree with the line to contribute motion evidence.
+6. Difference successive accepted fitted centers:
+   `delta_y = fitted_y_now - fitted_y_previous`,
+   `velocity = delta_y / elapsed_seconds`. Confirm movement only if the finite
+   difference and local slope agree, speed is at least `--min-speed 0.04` frame
+   heights/second, and at least three increments cover `--min-displacement 0.08`
+   frame heights over `--confirm-seconds 0.15` seconds or more. These thresholds
+   describe motion magnitude and quality; there is no fixed y boundary.
+
+Image y increases downward. The default `--inward down` maps positive motion to
+entering and negative motion to leaving, following the existing verifier's camera
+convention. Use `--inward up` if the camera geometry is reversed.
+
+One continuous direction is counted once per track segment. A pause does not
+re-arm that direction; a confirmed opposite movement does. A sufficiently long
+evidence gap starts a new segment. A single global best-fit line would hide
+reversals; the local fits preserve sufficiently long entering/leaving episodes.
+Centered windows use future observations, so this implementation analyzes the
+complete video before emitting events. It is not a zero-latency live detector.
+
+### Outputs
+
+Successful stdout is one integer: inferred inward episodes minus outward episodes.
+Stderr immediately shows startup and model-loading messages, then frame progress
+approximately every two seconds (after the current frame finishes). A completion
+summary distinguishes no detections, insufficient fit evidence, and no qualifying
+motion. Stderr also lists motion events. CPU inference can take longer than the
+video's playback duration. No output files are needed to run the algorithm.
+
+Add `--debug` to save the diagnostic files after processing the whole video:
+
+```powershell
+python .\Scripts\verify_milk_motion.py `
+  --video ".\Dataset\videos\add_milk\milk_added.mp4" `
+  --debug `
+  --output-dir ".\debug\milk_motion"
+```
+
+`--output-dir` defaults to `debug/milk_motion` under the project directory and is
+only used with `--debug`. Debug mode prints the artifact paths on stderr and
+writes these three files; repeating the same video stem in the same directory
+overwrites them. The script does not open a video or plot window.
+
+- `<video_stem>_motion.csv`: raw detections, fit status, fitted coordinates,
+  residuals, local slopes, finite differences, velocities, and events.
+- `<video_stem>_motion.json`: video metadata, thresholds, events, and net estimate.
+- `<video_stem>_motion.png`: raw y positions, robust fitted trajectories, rejected
+  observations, event markers, and fitted velocity over time.
+
+CSV rows exist only for detections; missing frame indices are not interpolated.
+Raw differences are between consecutive confident observations of the same track
+segment; fitted differences are between accepted fits. Each uses its actual time
+gap. Low-confidence/untracked coordinates are retained but not fitted. A rejected
+fit indicates disagreement or insufficient consensus, not proof of a false object.
+The y axis on the position plot increases downward like the video. Dashed lines on
+the velocity plot show speed thresholds, not spatial boundaries.
+
+### Feasibility and limits
+
+This is useful when entry and exit have consistent vertical motion under a fixed
+camera. Robust regression reduces isolated coordinate spikes; it cannot reject a
+false object that forms a coherent moving track. Bounding-box size changes,
+occlusion, rotation, camera motion, identity switches, duplicate tracks, and
+moving milk already inside the fridge can still cause missed or extra counts.
+Long detection gaps can split one physical movement into multiple counted segments.
+Fast turns can be smoothed away; small windows preserve turns but suppress less
+noise, while larger windows need more sustained movement. Constant-FPS timestamps
+come from frame index / OpenCV FPS; variable-frame-rate timing is approximate.
+OpenCV cannot reliably distinguish EOF from a midstream decode failure.
+
+Treat all defaults as starting points, not calibrated accuracy claims. Evaluate
+entering, leaving, round trips, stationary milk, repositioning, and non-milk
+videos, and inspect event directions/times as well as net totals: two wrong events
+can cancel to a correct zero. The existing gate verifier may be more selective
+when a fixed physical entrance corresponds well to its boundary.
+
+Initial spot checks with `milk-vision-v4n.pt` and the default motion thresholds
+produced the following results. These are individual clips, not accuracy estimates:
+
+| Folder / clip | Inferred events | Net |
+| --- | --- | --- |
+| `add_milk/milk_added.mp4` | inward | `+1` |
+| `remove_milk/video_20260904_203519.mp4` | outward | `-1` |
+| `add_and_remove_milk/video_20260904_204755.mp4` | inward, outward | `0` |
+| `reposition_milk_or_do_nothing/video_20260904_205222.mp4` | inward, outward | `0` |
+
+The last row demonstrates why net totals alone are insufficient: the no-change
+category still produced two directional events. Artifacts from these runs are
+under `debug/milk_motion/smoke`. The complete repository test suite passed 70
+tests, including 14 tests for motion regression, filtering, gaps, reversals,
+independent tracks, coordinate retention, argument validation, and artifacts.
+
+## `run_multiple_verify_milk_motion.py`
+
+Run the motion verifier once for each video directly inside a specified folder:
+
+```powershell
+python .\Scripts\run_multiple_verify_milk_motion.py --folder "D:\fridge videos"
+```
+
+No CSV, JSON or PNG files are created by default. Add `--debug` to generate all
+three for each video. Additional motion-verifier arguments are forwarded to each
+run, including `--output-dir`, `--model`, `--device`, and motion thresholds:
+
+```powershell
+python .\Scripts\run_multiple_verify_milk_motion.py `
+  --folder "D:\fridge videos" `
+  --debug `
+  --output-dir ".\debug\milk_motion" `
+  --device cpu
+```
+
+- Supported extensions are `.mp4`, `.mov`, `.avi`, `.mkv`, `.m4v`, `.webm`, and
+  `.wmv`, matched case-insensitively. Subfolders and other files are ignored.
+- Videos run sequentially in case-insensitive filename order. Each runs in a
+  separate process using the same Python interpreter and loads its own model.
+- The console shows each filename, live verifier progress, events, and the net
+  integer result. The runner prints a final failure count without an aggregate file.
+- A failed video does not stop the remaining videos. The runner exits with code
+  `1` if any failed, `0` if all succeeded, or `130` when interrupted. A missing or
+  empty video folder produces an argument error.
+- Debug files share the selected output directory. Use unique video stems:
+  `clip.mp4` and `clip.mov` would overwrite each other's debug files.
+
+Use `--folder` for the batch input. For available forwarded settings, run
+`python .\Scripts\verify_milk_motion.py --help`.
 
 ## `run_multiple_verify_milk_placement.py`
 
