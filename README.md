@@ -689,7 +689,8 @@ input argument is `--folder`, not `--video`.
 
 ```powershell
 python .\Scripts\run_multiple_verify_milk_placement.py `
-  --folder "D:\fridge videos"
+  --folder "D:\fridge videos" `
+  --model "D:\models\milk-vision-custom.pt"
 ```
 
 ### Argument
@@ -697,6 +698,7 @@ python .\Scripts\run_multiple_verify_milk_placement.py `
 | Argument | Required/default | Function |
 | --- | --- | --- |
 | `--folder PATH` | Required | Existing folder containing all videos to process. |
+| `--model PATH` | `Models\milk-vision-v3.pt` | Model file used to verify every video. The path is passed to the single-video verifier. |
 
 ### Processing behavior
 
@@ -713,8 +715,9 @@ For each file, the wrapper launches a separate verifier process using the same
 Python interpreter. It passes one file at a time to the single-video verifier,
 whose input necessarily remains `--video`. That is an internal implementation
 detail; when running this multiple-video script, use only `--folder`. The
-single-video verifier's defaults apply, including `Models\milk-vision-v3.pt`, and
-debug output is **off**. The wrapper does not write an aggregate report.
+When `--model` is omitted, the single-video verifier's default
+`Models\milk-vision-v3.pt` applies. Debug output is **off**, and the wrapper does
+not write an aggregate report.
 
 Show the wrapper's argument help with:
 

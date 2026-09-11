@@ -45,15 +45,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         required=True,
         help="Folder containing the videos to verify",
     )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help="Model file passed to the verifier (default: verifier's model)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     folder = args.folder.expanduser().resolve()
+    model = args.model.expanduser().resolve() if args.model is not None else None
 
     if not folder.is_dir():
         print(f"Video folder does not exist: {folder}", file=sys.stderr)
+        return 1
+
+    if model is not None and not model.is_file():
+        print(f"Model file does not exist: {model}", file=sys.stderr)
         return 1
 
     videos = find_videos(folder)
@@ -66,8 +77,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for index, video_path in enumerate(videos, start=1):
         print(f"\n[{index}/{len(videos)}] Running: {video_path.name}")
+        command = [sys.executable, str(SCRIPT_NAME), "--video", str(video_path)]
+        if model is not None:
+            command.extend(["--model", str(model)])
         result = subprocess.run(
-            [sys.executable, str(SCRIPT_NAME), "--video", str(video_path)],
+            command,
             capture_output=True,
             text=True,
         )

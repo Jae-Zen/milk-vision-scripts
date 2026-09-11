@@ -18,7 +18,7 @@ from typing import Any, TextIO
 # working directory.  This keeps the default model path stable when the script is
 # launched from another directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v3.pt"
+DEFAULT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v4.pt"
 TRACKER_CONFIG = Path(__file__).resolve().with_name("milk_botsort.yaml")
 TRACKING_CONFIDENCE = 0.10
 CROSSING_CONFIDENCE = 0.40
@@ -602,7 +602,7 @@ def verify_video(
     video_path: Path,
     model_path: Path,
     confidence: float = CROSSING_CONFIDENCE,
-    gate_y: float = 0.20,
+    gate_y: float = 0.27,
     device: str | None = None,
     debug: bool = False,
     tracking_confidence: float = TRACKING_CONFIDENCE,
@@ -873,8 +873,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--gate-y",
         type=lambda value: _bounded_float(value, 0.05, 0.95, "gate position"),
-        default=0.20,
-        help="Normalized vertical top-gate position (default: 0.20)",
+        default=0.27,
+        help="Normalized vertical top-gate position (default: 0.27)",
     )
     parser.add_argument(
         "--device",
