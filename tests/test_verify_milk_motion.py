@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import verify_milk_motion as motion
 
 
-def samples(ys, track_id=1, start_frame=0, confidence=0.9, fps=30):
+def samples(ys, track_id: int | None = 1, start_frame=0, confidence=0.9, fps=30):
     return [{"frame_index": start_frame + i, "timestamp_seconds": (start_frame + i) / fps,
              "track_id": track_id, "confidence": confidence, "center_y_normalized": y}
             for i, y in enumerate(ys)]
@@ -103,9 +103,10 @@ class MotionTests(unittest.TestCase):
 
     def test_raw_boxes_are_preserved_including_untracked_detection(self):
         import numpy as np
+        import torch
         from ultralytics.engine.results import Results
         result = Results(np.zeros((100, 200, 3), dtype=np.uint8), "test", {0: "milk"},
-                         boxes=np.array([[10, 10, 30, 30, 0.9, 0], [80, 60, 100, 80, 0.2, 0]]))
+                         boxes=torch.tensor([[10, 10, 30, 30, 0.9, 0], [80, 60, 100, 80, 0.2, 0]]))
         tracks = np.array([[11, 11, 31, 31, 7, 0.9, 0, 0]])
         rows = motion.detection_rows(result, tracks, 3, 30)
         self.assertEqual(2, len(rows))

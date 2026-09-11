@@ -235,6 +235,7 @@ def collect_detections(video_path: Path, model_path: Path, tracking_confidence: 
     try:
         import cv2
         from ultralytics import YOLO
+        from ultralytics.engine.results import Results
         from ultralytics.trackers.bot_sort import BOTSORT
         from ultralytics.utils import YAML, IterableSimpleNamespace
     except ImportError as exc:
@@ -263,7 +264,12 @@ def collect_detections(video_path: Path, model_path: Path, tracking_confidence: 
             ok, frame = capture.read()
             if not ok:
                 break
-            result = model.predict(frame, **arguments)[0]
+            predictions = model.predict(frame, stream=False, **arguments)
+            if not isinstance(predictions, list) or not predictions:
+                raise VerificationError("Expected a non-empty list of prediction results")
+            result = predictions[0]
+            if not isinstance(result, Results) or result.boxes is None:
+                raise VerificationError("The model must return object detection boxes")
             # Explicit tracker update preserves all raw detections and advances
             # its clock even on empty frames. model.track() can filter boxes.
             tracks = tracker.update(result.boxes.cpu().numpy(), frame)
@@ -289,7 +295,7 @@ def collect_detections(video_path: Path, model_path: Path, tracking_confidence: 
         capture.release()
 
 
-CSV_FIELDS = ("frame_index", "timestamp_seconds", "detection_index", "track_id", "confidence",
+CSV_FIELDS: tuple[str, ...] = ("frame_index", "timestamp_seconds", "detection_index", "track_id", "confidence",
               "frame_width", "frame_height", "x1", "y1", "x2", "y2", "center_x", "center_y",
               "center_y_normalized", "segment_id", "raw_delta_y_normalized", "raw_delta_seconds",
               "fitted_y_normalized", "slope_per_second", "inlier_fraction", "residual_normalized",
