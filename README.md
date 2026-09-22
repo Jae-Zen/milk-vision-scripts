@@ -709,31 +709,23 @@ when `--debug` is enabled; ordinary runs create no CSV, JSON or PNG files.
    the history when confident observations are more than `--max-gap-seconds 0.50`
    apart. Weak observations cannot bridge this evidence gap.
 4. Fit a local line `y(t) = a + b*t` in a centered `--window-seconds 0.60` window.
-   If this window has too few observations or too little time support, extend
-   toward the nearest confident observations in the same segment until both
-   requirements are met, keeping the **total span at most 0.60 seconds**. This
-   allows asymmetric support near sparse detections without lowering the minimum
-   count. Use `--no-adaptive-window` to restore strictly centered windows.
-   Rejected regressions are not retried with different windows.
    Use a univariate Theil-Sen estimate: median pairwise slope and median intercept.
-   At most 61 uniformly spaced observations determine the slope; all window
-   observations participate in residual checks. This avoids a new scikit-learn
-   dependency and bounds the pairwise calculation at high FPS.
-5. Require at least `--min-observations 5` inliers spanning `--min-fit-seconds 0.12`.
-   At least `--min-inlier-fraction 0.65` of the window must be within
-   `--residual-threshold 0.025` frame heights of the fitted line. The current
-   observation must also agree with the line to contribute motion evidence.
-6. Difference successive accepted fitted centers:
+   At most 61 uniformly spaced observations determine the slope. There are no
+   observation-count, fitting-duration, inlier, or residual acceptance thresholds.
+   Two time-distinct observations are the mathematical minimum needed to define a
+   slope; an isolated observation cannot contribute fitted motion. Residual is
+   retained as diagnostic information only.
+5. Difference successive accepted fitted centers:
    `delta_y = fitted_y_now - fitted_y_previous`,
-   `velocity = delta_y / elapsed_seconds`. Confirm movement only if the finite
-   difference and local slope agree, speed is at least `--min-speed 0.04` frame
-   heights/second. A moving step starts or continues a directional candidate;
+   `velocity = delta_y / elapsed_seconds`. Classify movement from this velocity
+   alone when its magnitude is at least `--min-speed 0.04` frame heights/second.
+   The local slope remains diagnostic and does not gate movement. A moving step starts or continues a directional candidate;
    neutral steps retain that candidate, and clear opposite motion replaces an
    unfinished candidate. Candidate displacement is the net fitted position change
    from its starting coordinate rather than a sum of individual steps. Confirm an
-   event when at least three moving increments cover `--min-displacement 0.08`
-   frame heights over `--confirm-seconds 0.15` seconds or more. These thresholds
-   describe motion magnitude and quality; there is no fixed y boundary.
+   event as soon as its net travel reaches `--min-displacement 0.08` frame
+   heights. There is no minimum moving-step count or candidate duration. There is
+   also no fixed y boundary.
 
 Image y increases downward. The default `--inward down` maps positive motion to
 entering and negative motion to leaving, following the existing verifier's camera
@@ -773,13 +765,12 @@ overwrites them. The script does not open a video or plot window.
 
 - `<video_stem>_motion.csv`: raw detections, fit status, fitted coordinates,
   residuals, local slopes, finite differences, velocities, and events. Includes
-  explicit fit failure reasons, window count/span, whether the window adapted,
-  inlier count/span, and directional candidate travel/duration/hit count.
+  window count/span and directional candidate travel/duration/hit count.
 - `<video_stem>_motion.json`: video metadata, thresholds, events, and net estimate.
 - `<video_stem>_motion.png`: every saved raw y position labelled by status:
   accepted (green circles), untracked (grey squares), low confidence (gold
-  triangles), insufficient evidence (purple crosses), or rejected (red crosses).
-  Blue rings identify adapted windows. Coloured trajectories show accepted fits;
+  triangles), or a mathematically unfittable isolated observation (purple cross).
+  Coloured trajectories show accepted fits;
   vertical event markers identify counted movements. Accepted fits still need
   to pass the event checks. The lower panel shows fitted velocity over time.
 
@@ -787,7 +778,8 @@ CSV rows exist only for detections; missing frame indices are not interpolated.
 Raw differences are between consecutive confident observations of the same track
 segment; fitted differences are between accepted fits. Each uses its actual time
 gap. Low-confidence/untracked coordinates are retained but not fitted. A rejected
-fit indicates disagreement or insufficient consensus, not proof of a false object.
+fit category is not used: constructed fits are not rejected by statistical quality
+checks.
 The y axis on the position plot increases downward like the video. Dashed lines on
 the velocity plot show speed thresholds, not spatial boundaries.
 

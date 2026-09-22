@@ -32,40 +32,24 @@ class MotionTests(unittest.TestCase):
 
     def test_sparse_recorded_add_and_remove(self):
         rows = json.loads((Path(__file__).parent / "fixtures" / "milk_motion_204912.json").read_text())
-        self.assertEqual(["outward"], [e["direction"] for e in self.analyze(rows, adaptive_window=False)])
         events = self.analyze(rows)
         self.assertEqual(["inward", "outward"], [e["direction"] for e in events])
-        self.assertEqual([153, 268], [e["frame_index"] for e in events])
+        self.assertEqual([152, 266], [e["frame_index"] for e in events])
         for frame in (140, 141):
             row = next(r for r in rows if r["frame_index"] == frame)
-            self.assertTrue(row["window_adapted"])
             self.assertEqual("accepted", row["fit_status"])
-            self.assertGreaterEqual(row["inlier_count"], 5)
-            self.assertLessEqual(row["window_span_seconds"], 0.6)
-        # Replaying with the old setting must clear the added event/fit fields.
-        self.analyze(rows, adaptive_window=False)
-        self.assertFalse(any(r.get("event") == "inward" for r in rows))
+            self.assertEqual(2, row["window_observations"])
 
-    def test_adaptation_cannot_reach_distant_support(self):
-        rows = samples([0.1, 0.12]) + samples([0.4, 0.42, 0.44], start_frame=15)
-        rows += samples([0.7, 0.72, 0.74], start_frame=30)
-        self.analyze(rows, window_seconds=0.4)
-        self.assertEqual("insufficient_evidence", rows[0]["fit_status"])
-        self.assertTrue(all(r["window_span_seconds"] <= 0.4 for r in rows))
-
-    def test_sparse_stationary_clusters_and_jump_are_not_motion(self):
-        for start_y in (0.5, 0.1):
-            rows = samples([start_y] * 2) + samples([0.5] * 8, start_frame=12)
-            self.assertEqual([], self.analyze(rows))
-
-    def test_adaptation_does_not_relax_minimum_count(self):
-        rows = samples([0.1, 0.2, 0.3, 0.4], fps=10)
+    def test_one_observation_cannot_define_a_slope(self):
+        rows = samples([0.1])
         self.assertEqual([], self.analyze(rows))
-        self.assertTrue(all(r["fit_status"] == "insufficient_evidence" for r in rows))
-        self.assertTrue(all("too_few_observations" in r["fit_reason"] for r in rows))
+        self.assertEqual("insufficient_evidence", rows[0]["fit_status"])
+        self.assertEqual("one_observation_cannot_define_slope", rows[0]["fit_reason"])
 
-    def test_adaptive_cli_can_be_disabled(self):
-        self.assertFalse(motion.parse_args(["--video", "test.mp4", "--no-adaptive-window"]).config.adaptive_window)
+    def test_two_observations_are_enough_for_a_fit(self):
+        rows = samples([0.1, 0.2], fps=10)
+        self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
+        self.assertTrue(all(r["fit_status"] == "accepted" for r in rows))
 
     def test_neutral_step_preserves_unfinished_candidate(self):
         rows = accepted_fits([0.50, 0.48, 0.46, 0.46, 0.44, 0.42])
@@ -108,14 +92,14 @@ class MotionTests(unittest.TestCase):
         ys[40] = 0.95
         rows = samples(ys)
         self.assertEqual([], self.analyze(rows))
-        self.assertEqual("rejected", rows[40]["fit_status"])
+        self.assertEqual("accepted", rows[40]["fit_status"])
 
     def test_moving_track_survives_an_outlier(self):
         ys = [0.1 + i * 0.01 for i in range(50)]
         ys[20] = 0.95
         rows = samples(ys)
         self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
-        self.assertEqual("rejected", rows[20]["fit_status"])
+        self.assertEqual("accepted", rows[20]["fit_status"])
 
     def test_separate_objects_keep_opposite_directions(self):
         rows = samples([0.1 + i * 0.01 for i in range(45)], 1)
@@ -136,10 +120,10 @@ class MotionTests(unittest.TestCase):
         self.assertEqual("low_confidence", rows[40]["fit_status"])
         self.assertNotEqual(rows[0]["segment_id"], rows[-1]["segment_id"])
 
-    def test_short_and_untracked_detections_are_not_motion_evidence(self):
-        rows = samples([0.1, 0.5, 0.8]) + samples([0.1 + i * 0.01 for i in range(50)], None)
+    def test_untracked_detections_are_not_motion_evidence(self):
+        rows = samples([0.1 + i * 0.01 for i in range(50)], None)
         self.assertEqual([], self.analyze(rows))
-        self.assertEqual("untracked", rows[-1]["fit_status"])
+        self.assertTrue(all(row["fit_status"] == "untracked" for row in rows))
 
     def test_irregular_sampling_uses_time(self):
         rows = samples([0.1 + i * 0.005 for i in range(90)])
@@ -161,7 +145,7 @@ class MotionTests(unittest.TestCase):
 
     def test_invalid_cli_thresholds(self):
         for option, value in [("--window-seconds", "nan"), ("--min-speed", "0"),
-                              ("--min-observations", "2"), ("--track-conf", "0.9")]:
+                              ("--track-conf", "0.9")]:
             with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 motion.parse_args(["--video", "test.mp4", option, value])
             self.assertEqual(2, raised.exception.code)
