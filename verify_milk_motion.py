@@ -32,7 +32,6 @@ def status(message: str) -> None:
 
 @dataclass(frozen=True)
 class MotionConfig:
-    confidence: float = 0.40
     window_seconds: float = 0.60
     max_gap_seconds: float = 0.50
     min_speed: float = 0.04
@@ -44,8 +43,6 @@ class MotionConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
-        if not 0 < self.confidence <= 1:
-            raise ValueError("confidence must be in (0, 1]")
         if self.inward not in ("down", "up"):
             raise ValueError("inward must be down or up")
 
@@ -130,7 +127,8 @@ def infer_events(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[
             if (sign != last_emitted_sign
                     and sign * displacement >= config.min_displacement):
                 direction = "inward" if (sign > 0) == (config.inward == "down") else "outward"
-                event = {"track_id": row["track_id"], "segment_id": row["segment_id"],
+                event = {"track_id": row["logical_track_id"],
+                         "source_track_id": row["track_id"], "segment_id": row["segment_id"],
                          "frame_index": row["frame_index"], "timestamp_seconds": row["timestamp_seconds"],
                          "direction": direction, "displacement_normalized": displacement,
                          "duration_seconds": duration}
@@ -149,59 +147,66 @@ def infer_events(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[
 
 
 def analyze_detections(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[str, Any]]:
-    """Analyze each confident track separately, splitting at evidence gaps."""
+    """Analyze every detector result as one trajectory, split at evidence gaps.
+
+    Tracker IDs remain diagnostic only. When a frame has multiple milk boxes,
+    the highest-confidence box supplies its single trajectory coordinate.
+    """
     config.validate()
-    tracks: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         # Re-analysis must not retain previous fits, events or diagnostics.
         for field in CSV_FIELDS[14:]:
             row.pop(field, None)
-        if row["track_id"] is None:
-            row["fit_status"] = "untracked"
-            row["fit_reason"] = "no_confirmed_track_id"
-        elif row["confidence"] < config.confidence:
-            row["fit_status"] = "low_confidence"
-            row["fit_reason"] = "below_confidence_threshold"
-        else:
-            tracks.setdefault(row["track_id"], []).append(row)
+        row["logical_track_id"] = 0
+        row["tracking_status"] = "tracked" if row["track_id"] is not None else "untracked_used"
+    frame_groups: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        frame_groups.setdefault(row["frame_index"], []).append(row)
+    trajectory = []
+    for frame_index in sorted(frame_groups):
+        candidates = frame_groups[frame_index]
+        chosen = max(candidates, key=lambda row: (row["confidence"], -row.get("detection_index", 0)))
+        trajectory.append(chosen)
+        for row in candidates:
+            if row is not chosen:
+                row["fit_status"] = "same_frame_duplicate"
+                row["fit_reason"] = "lower_confidence_box_at_same_timestamp"
+    segments: list[list[dict[str, Any]]] = []
+    for row in trajectory:
+        if not segments or row["timestamp_seconds"] - segments[-1][-1]["timestamp_seconds"] > config.max_gap_seconds:
+            segments.append([])
+        if segments[-1]:
+            previous = segments[-1][-1]
+            if row["timestamp_seconds"] <= previous["timestamp_seconds"]:
+                raise ValueError("Logical trajectory timestamps must increase")
+            row["raw_delta_y_normalized"] = row["center_y_normalized"] - previous["center_y_normalized"]
+            row["raw_delta_seconds"] = row["timestamp_seconds"] - previous["timestamp_seconds"]
+        segments[-1].append(row)
     events = []
-    for track_rows in tracks.values():
-        track_rows.sort(key=lambda row: row["frame_index"])
-        segments: list[list[dict[str, Any]]] = []
-        for row in track_rows:
-            if not segments or row["timestamp_seconds"] - segments[-1][-1]["timestamp_seconds"] > config.max_gap_seconds:
-                segments.append([])
-            if segments[-1]:
-                previous = segments[-1][-1]
-                if row["timestamp_seconds"] <= previous["timestamp_seconds"]:
-                    raise ValueError("Each track must have at most one detection per frame")
-                row["raw_delta_y_normalized"] = row["center_y_normalized"] - previous["center_y_normalized"]
-                row["raw_delta_seconds"] = row["timestamp_seconds"] - previous["timestamp_seconds"]
-            segments[-1].append(row)
-        for segment_id, segment in enumerate(segments):
-            left, right = 0, 0
-            half_window = config.window_seconds / 2
-            for row in segment:
-                row["segment_id"] = segment_id
-                time = row["timestamp_seconds"]
-                while left < len(segment) and segment[left]["timestamp_seconds"] < time - half_window:
-                    left += 1
-                while right < len(segment) and segment[right]["timestamp_seconds"] <= time + half_window:
-                    right += 1
-                window = segment[left:right]
-                span = window[-1]["timestamp_seconds"] - window[0]["timestamp_seconds"]
-                row.update(window_observations=len(window), window_span_seconds=span)
-                fit = robust_local_fit([r["timestamp_seconds"] for r in window],
-                                       [r["center_y_normalized"] for r in window],
-                                       time, row["center_y_normalized"], config)
-                row["fit_status"] = "insufficient_evidence"
-                row["fit_reason"] = "one_observation_cannot_define_slope"
-                if fit is not None:
-                    row.update(fitted_y_normalized=fit.y, slope_per_second=fit.slope,
-                               residual_normalized=fit.residual,
-                               fit_reason="accepted", fit_status="accepted")
-            events.extend(infer_events(segment, config))
-    return sorted(events, key=lambda event: (event["frame_index"], event["track_id"]))
+    for segment_id, segment in enumerate(segments):
+        left, right = 0, 0
+        half_window = config.window_seconds / 2
+        for row in segment:
+            row["segment_id"] = segment_id
+            time = row["timestamp_seconds"]
+            while left < len(segment) and segment[left]["timestamp_seconds"] < time - half_window:
+                left += 1
+            while right < len(segment) and segment[right]["timestamp_seconds"] <= time + half_window:
+                right += 1
+            window = segment[left:right]
+            span = window[-1]["timestamp_seconds"] - window[0]["timestamp_seconds"]
+            row.update(window_observations=len(window), window_span_seconds=span)
+            fit = robust_local_fit([r["timestamp_seconds"] for r in window],
+                                   [r["center_y_normalized"] for r in window],
+                                   time, row["center_y_normalized"], config)
+            row["fit_status"] = "insufficient_evidence"
+            row["fit_reason"] = "one_observation_cannot_define_slope"
+            if fit is not None:
+                row.update(fitted_y_normalized=fit.y, slope_per_second=fit.slope,
+                           residual_normalized=fit.residual,
+                           fit_reason="accepted", fit_status="accepted")
+        events.extend(infer_events(segment, config))
+    return sorted(events, key=lambda event: event["frame_index"])
 
 
 def detection_rows(result: Any, tracks: Any, frame_index: int, fps: float) -> list[dict[str, Any]]:
@@ -300,7 +305,8 @@ CSV_FIELDS: tuple[str, ...] = ("frame_index", "timestamp_seconds", "detection_in
               "fit_status", "fitted_delta_y_normalized", "fitted_velocity_per_second", "motion", "event",
               "fit_reason", "window_observations", "window_span_seconds",
               "candidate_displacement_normalized",
-              "candidate_duration_seconds", "candidate_hits", "candidate_direction")
+              "candidate_duration_seconds", "candidate_hits", "candidate_direction",
+              "logical_track_id", "tracking_status")
 
 
 def plot_motion(rows: list[dict[str, Any]], events: list[dict[str, Any]], path: Path,
@@ -313,32 +319,35 @@ def plot_motion(rows: list[dict[str, Any]], events: list[dict[str, Any]], path: 
         raise VerificationError("Matplotlib is required for the motion plot.") from exc
     fig, (position, velocity) = plt.subplots(2, 1, figsize=(13, 8), sharex=True, layout="constrained")
     try:
-        styles = {"accepted": ("#17834c", "o", "Accepted observation (event checks separate)"),
-                  "untracked": ("#777777", "s", "Untracked: no confirmed ID"),
-                  "low_confidence": ("#bb8700", "v", "Below fit confidence threshold"),
-                  "insufficient_evidence": ("#8b46b0", "X", "Only one observation in fit window")}
-        for fit_status, (color, marker, label) in styles.items():
-            selected = [r for r in rows if r["fit_status"] == fit_status]
+        styles = {("accepted", "tracked"): ("#17834c", "o", "Accepted: tracker ID present"),
+                  ("accepted", "untracked_used"): ("#777777", "s", "Accepted: no tracker ID"),
+                  ("insufficient_evidence", "tracked"): ("#8b46b0", "X", "Isolated tracked observation"),
+                  ("insufficient_evidence", "untracked_used"): ("#c74040", "X", "Isolated untracked observation"),
+                  ("same_frame_duplicate", "tracked"): ("#c46a1a", "D", "Unused same-frame tracked box"),
+                  ("same_frame_duplicate", "untracked_used"): ("#c46a1a", "D", "Unused same-frame untracked box")}
+        for (fit_status, tracking_status), (color, marker, label) in styles.items():
+            selected = [r for r in rows if r["fit_status"] == fit_status
+                        and r["tracking_status"] == tracking_status]
             if selected:
                 position.scatter([r["timestamp_seconds"] for r in selected],
                                  [r["center_y_normalized"] for r in selected],
                                  s=30, c=color, marker=marker, alpha=0.85, label=f"{label} ({len(selected)})", zorder=3)
-        groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+        groups: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             if "segment_id" in row:
-                groups.setdefault((row["track_id"], row["segment_id"]), []).append(row)
-        for (track_id, segment_id), group in groups.items():
+                groups.setdefault(row["segment_id"], []).append(row)
+        for segment_id, group in groups.items():
             times = [r["timestamp_seconds"] for r in group]
             fitted = [r["fitted_y_normalized"] if r["fit_status"] == "accepted" else math.nan for r in group]
             line, = position.plot(times, fitted, linewidth=1.8,
-                                  label=f"Accepted fit: track {track_id}, segment {segment_id}" if len(groups) <= 12 else "_nolegend_")
+                                  label=f"Accepted fit: logical trajectory, segment {segment_id}" if len(groups) <= 12 else "_nolegend_")
             velocity.plot(times, [r.get("fitted_velocity_per_second", math.nan) for r in group], color=line.get_color())
         for event in events:
             color = "#198754" if event["direction"] == "inward" else "#be4b27"
             position.axvline(event["timestamp_seconds"], color=color, alpha=0.65, linestyle=":")
             position.text(event["timestamp_seconds"], 0.02, event["direction"], rotation=90,
                           transform=position.get_xaxis_transform(), color=color, va="bottom")
-        position.set(title="Milk motion: raw centers and robust rolling fits (no spatial gate)",
+        position.set(title="Milk motion: one logical trajectory and robust rolling fits (no spatial gate)",
                      ylabel="Center y / frame height")
         position.invert_yaxis()
         if rows:
@@ -380,7 +389,7 @@ def print_summary(rows: list[dict[str, Any]], events: list[dict[str, Any]], net_
     if not rows:
         status("No milk detections were found.")
     elif not accepted:
-        status("Milk was detected, but no observations met the tracking/confidence/regression requirements.")
+        status("Milk was detected, but no observations could form a local fit.")
     elif not events:
         status("Milk was detected and fitted, but no movement met the event thresholds.")
     status(f"Complete: {len(rows)} detections, {accepted} accepted fits, {len(events)} motion events, net change {net_delta:+d}.")
@@ -397,22 +406,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "debug" / "milk_motion",
                         help="Output folder (only used with --debug)")
     parser.add_argument("--track-conf", type=float, default=0.10)
-    parser.add_argument("--conf", type=float, default=0.40, help="Minimum confidence for regression")
     parser.add_argument("--inward", choices=("down", "up"), default="down", help="Image direction into the fridge")
     for name, default, help_text in (
         ("window-seconds", 0.60, "Full width of centered local regression window"),
-        ("max-gap-seconds", 0.50, "Split a track after this gap in confident observations"),
+        ("max-gap-seconds", 0.50, "Split the logical trajectory after this detection gap"),
         ("min-speed", 0.04, "Minimum speed in frame heights per second"),
         ("min-displacement", 0.08, "Minimum sustained travel in frame heights"),
     ):
         parser.add_argument(f"--{name}", type=float, default=default, help=help_text)
     args = parser.parse_args(argv)
-    args.config = MotionConfig(confidence=args.conf, **{name: getattr(args, name)
-                               for name in MotionConfig.__dataclass_fields__ if name != "confidence"})
+    args.config = MotionConfig(**{name: getattr(args, name)
+                                 for name in MotionConfig.__dataclass_fields__})
     try:
         args.config.validate()
-        if not 0 < args.track_conf <= args.conf:
-            raise ValueError("Require 0 < --track-conf <= --conf <= 1")
+        if not 0 < args.track_conf <= 1:
+            raise ValueError("--track-conf must be in (0, 1]")
     except ValueError as exc:
         parser.error(str(exc))
     return args

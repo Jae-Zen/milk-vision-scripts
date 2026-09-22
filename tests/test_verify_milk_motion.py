@@ -22,7 +22,8 @@ def accepted_fits(ys, slopes=None, step=0.1):
     """Minimal accepted-fit rows for testing event state independently of fitting."""
     slopes = slopes or [0.0] + [(ys[i] - ys[i - 1]) / step for i in range(1, len(ys))]
     return [{"frame_index": i, "timestamp_seconds": i * step, "track_id": 1,
-             "segment_id": 0, "fit_status": "accepted", "fitted_y_normalized": y,
+             "logical_track_id": 0, "segment_id": 0,
+             "fit_status": "accepted", "fitted_y_normalized": y,
              "slope_per_second": slopes[i]} for i, y in enumerate(ys)]
 
 
@@ -34,11 +35,11 @@ class MotionTests(unittest.TestCase):
         rows = json.loads((Path(__file__).parent / "fixtures" / "milk_motion_204912.json").read_text())
         events = self.analyze(rows)
         self.assertEqual(["inward", "outward"], [e["direction"] for e in events])
-        self.assertEqual([152, 266], [e["frame_index"] for e in events])
+        self.assertEqual([139, 265], [e["frame_index"] for e in events])
         for frame in (140, 141):
             row = next(r for r in rows if r["frame_index"] == frame)
             self.assertEqual("accepted", row["fit_status"])
-            self.assertEqual(2, row["window_observations"])
+            self.assertEqual(4, row["window_observations"])
 
     def test_one_observation_cannot_define_a_slope(self):
         rows = samples([0.1])
@@ -101,29 +102,30 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
         self.assertEqual("accepted", rows[20]["fit_status"])
 
-    def test_separate_objects_keep_opposite_directions(self):
+    def test_multiple_detections_use_highest_confidence_box(self):
         rows = samples([0.1 + i * 0.01 for i in range(45)], 1)
-        rows += samples([0.8 - i * 0.01 for i in range(45)], 2)
-        self.assertEqual({(1, "inward"), (2, "outward")},
-                         {(e["track_id"], e["direction"]) for e in self.analyze(rows)})
+        rows += samples([0.8 - i * 0.01 for i in range(45)], 2, confidence=0.8)
+        self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
+        self.assertTrue(all(row["fit_status"] == "same_frame_duplicate" for row in rows[45:]))
 
     def test_gaps_do_not_create_movement_between_stationary_positions(self):
         rows = samples([0.1] * 20) + samples([0.8] * 20, start_frame=80)
         self.assertEqual([], self.analyze(rows))
         self.assertNotEqual(rows[0]["segment_id"], rows[-1]["segment_id"])
 
-    def test_weak_matches_do_not_bridge_evidence_gap(self):
+    def test_all_detector_confidences_are_used(self):
         rows = samples([0.1] * 20)
         rows += samples([0.5] * 60, start_frame=20, confidence=0.2)
         rows += samples([0.8] * 20, start_frame=80)
-        self.assertEqual([], self.analyze(rows))
-        self.assertEqual("low_confidence", rows[40]["fit_status"])
-        self.assertNotEqual(rows[0]["segment_id"], rows[-1]["segment_id"])
+        self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
+        self.assertTrue(all(row["fit_status"] == "accepted" for row in rows))
+        self.assertEqual(rows[0]["segment_id"], rows[-1]["segment_id"])
 
-    def test_untracked_detections_are_not_motion_evidence(self):
+    def test_untracked_detections_are_used(self):
         rows = samples([0.1 + i * 0.01 for i in range(50)], None)
-        self.assertEqual([], self.analyze(rows))
-        self.assertTrue(all(row["fit_status"] == "untracked" for row in rows))
+        self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
+        self.assertTrue(all(row["fit_status"] == "accepted" for row in rows))
+        self.assertTrue(all(row["tracking_status"] == "untracked_used" for row in rows))
 
     def test_irregular_sampling_uses_time(self):
         rows = samples([0.1 + i * 0.005 for i in range(90)])
@@ -145,7 +147,7 @@ class MotionTests(unittest.TestCase):
 
     def test_invalid_cli_thresholds(self):
         for option, value in [("--window-seconds", "nan"), ("--min-speed", "0"),
-                              ("--track-conf", "0.9")]:
+                              ("--track-conf", "0"), ("--track-conf", "1.1")]:
             with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 motion.parse_args(["--video", "test.mp4", option, value])
             self.assertEqual(2, raised.exception.code)

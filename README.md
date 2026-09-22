@@ -705,9 +705,13 @@ when `--debug` is enabled; ordinary runs create no CSV, JSON or PNG files.
    have no confirmed tracker ID. Retain `y1`, `y2`, midpoint y in pixels, normalized
    midpoint y, confidence, time, frame index, and any matched track ID. These are
    the original detector coordinates, not the tracker's Kalman-filtered boxes.
-3. Fit confident observations (`--conf 0.40`) separately for each track ID. Split
-   the history when confident observations are more than `--max-gap-seconds 0.50`
-   apart. Weak observations cannot bridge this evidence gap.
+3. Treat every detector result admitted by `--track-conf 0.10` as one logical
+   milk trajectory. Tracker IDs remain in debug output but do not control grouping
+   or eligibility; detections without IDs are used normally. Split the trajectory
+   when observations are more than `--max-gap-seconds 0.50` apart. This mode
+   uses the highest-confidence box when a frame contains multiple milk detections,
+   because simultaneous boxes cannot define one unambiguous y coordinate. The
+   unused boxes remain labelled in debug output.
 4. Fit a local line `y(t) = a + b*t` in a centered `--window-seconds 0.60` window.
    Use a univariate Theil-Sen estimate: median pairwise slope and median intercept.
    At most 61 uniformly spaced observations determine the slope. There are no
@@ -719,10 +723,11 @@ when `--debug` is enabled; ordinary runs create no CSV, JSON or PNG files.
    `delta_y = fitted_y_now - fitted_y_previous`,
    `velocity = delta_y / elapsed_seconds`. Classify movement from this velocity
    alone when its magnitude is at least `--min-speed 0.04` frame heights/second.
-   The local slope remains diagnostic and does not gate movement. A moving step starts or continues a directional candidate;
-   neutral steps retain that candidate, and clear opposite motion replaces an
-   unfinished candidate. Candidate displacement is the net fitted position change
-   from its starting coordinate rather than a sum of individual steps. Confirm an
+   The local slope remains diagnostic and does not gate movement. A moving step
+   starts or continues a directional candidate; neutral steps retain that candidate,
+   and clear opposite motion replaces an unfinished candidate. Candidate displacement
+   is the net fitted position change from its starting coordinate rather than a sum
+   of individual steps. Confirm an
    event as soon as its net travel reaches `--min-displacement 0.08` frame
    heights. There is no minimum moving-step count or candidate duration. There is
    also no fixed y boundary.
@@ -731,7 +736,7 @@ Image y increases downward. The default `--inward down` maps positive motion to
 entering and negative motion to leaving, following the existing verifier's camera
 convention. Use `--inward up` if the camera geometry is reversed.
 
-One continuous direction is counted once per track segment. A pause preserves a
+One continuous direction is counted once per logical-trajectory segment. A pause preserves a
 pending movement but does not re-arm a direction already counted. Only a complete
 opposite event re-arms it; an incomplete opposite candidate is discarded if the
 original direction resumes. A sufficiently long evidence gap starts a new segment.
@@ -768,18 +773,19 @@ overwrites them. The script does not open a video or plot window.
   window count/span and directional candidate travel/duration/hit count.
 - `<video_stem>_motion.json`: video metadata, thresholds, events, and net estimate.
 - `<video_stem>_motion.png`: every saved raw y position labelled by status:
-  accepted (green circles), untracked (grey squares), low confidence (gold
-  triangles), or a mathematically unfittable isolated observation (purple cross).
+  accepted with a tracker ID (green circles), accepted without a tracker ID (grey
+  squares), an unused same-frame box (orange diamond), or a mathematically
+  unfittable isolated observation (cross).
   Coloured trajectories show accepted fits;
   vertical event markers identify counted movements. Accepted fits still need
   to pass the event checks. The lower panel shows fitted velocity over time.
 
 CSV rows exist only for detections; missing frame indices are not interpolated.
-Raw differences are between consecutive confident observations of the same track
+Raw differences are between consecutive selected detections in the same logical
 segment; fitted differences are between accepted fits. Each uses its actual time
-gap. Low-confidence/untracked coordinates are retained but not fitted. A rejected
-fit category is not used: constructed fits are not rejected by statistical quality
-checks.
+gap. Every coordinate admitted by `--track-conf` is fitted regardless of its
+confidence or tracker-ID status. A rejected-fit category is not used: constructed
+fits are not rejected by statistical quality checks.
 The y axis on the position plot increases downward like the video. Dashed lines on
 the velocity plot show speed thresholds, not spatial boundaries.
 
@@ -788,8 +794,10 @@ the velocity plot show speed thresholds, not spatial boundaries.
 This is useful when entry and exit have consistent vertical motion under a fixed
 camera. Robust regression reduces isolated coordinate spikes; it cannot reject a
 false object that forms a coherent moving track. Bounding-box size changes,
-occlusion, rotation, camera motion, identity switches, duplicate tracks, and
-moving milk already inside the fridge can still cause missed or extra counts.
+occlusion, rotation, camera motion, and moving milk already inside the fridge can
+still cause missed or extra counts. Tracker identity changes do not split motion,
+but multiple milk detections in one frame are reduced to the highest-confidence
+box and may select the wrong carton.
 Long detection gaps can split one physical movement into multiple counted segments.
 Fast turns can be smoothed away; small windows preserve turns but suppress less
 noise, while larger windows need more sustained movement. Constant-FPS timestamps
