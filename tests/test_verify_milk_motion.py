@@ -18,9 +18,74 @@ def samples(ys, track_id: int | None = 1, start_frame=0, confidence=0.9, fps=30)
             for i, y in enumerate(ys)]
 
 
+def accepted_fits(ys, slopes=None, step=0.1):
+    """Minimal accepted-fit rows for testing event state independently of fitting."""
+    slopes = slopes or [0.0] + [(ys[i] - ys[i - 1]) / step for i in range(1, len(ys))]
+    return [{"frame_index": i, "timestamp_seconds": i * step, "track_id": 1,
+             "segment_id": 0, "fit_status": "accepted", "fitted_y_normalized": y,
+             "slope_per_second": slopes[i]} for i, y in enumerate(ys)]
+
+
 class MotionTests(unittest.TestCase):
     def analyze(self, rows, **kwargs):
         return motion.analyze_detections(rows, motion.MotionConfig(**kwargs))
+
+    def test_sparse_recorded_add_and_remove(self):
+        rows = json.loads((Path(__file__).parent / "fixtures" / "milk_motion_204912.json").read_text())
+        self.assertEqual(["outward"], [e["direction"] for e in self.analyze(rows, adaptive_window=False)])
+        events = self.analyze(rows)
+        self.assertEqual(["inward", "outward"], [e["direction"] for e in events])
+        self.assertEqual([153, 268], [e["frame_index"] for e in events])
+        for frame in (140, 141):
+            row = next(r for r in rows if r["frame_index"] == frame)
+            self.assertTrue(row["window_adapted"])
+            self.assertEqual("accepted", row["fit_status"])
+            self.assertGreaterEqual(row["inlier_count"], 5)
+            self.assertLessEqual(row["window_span_seconds"], 0.6)
+        # Replaying with the old setting must clear the added event/fit fields.
+        self.analyze(rows, adaptive_window=False)
+        self.assertFalse(any(r.get("event") == "inward" for r in rows))
+
+    def test_adaptation_cannot_reach_distant_support(self):
+        rows = samples([0.1, 0.12]) + samples([0.4, 0.42, 0.44], start_frame=15)
+        rows += samples([0.7, 0.72, 0.74], start_frame=30)
+        self.analyze(rows, window_seconds=0.4)
+        self.assertEqual("insufficient_evidence", rows[0]["fit_status"])
+        self.assertTrue(all(r["window_span_seconds"] <= 0.4 for r in rows))
+
+    def test_sparse_stationary_clusters_and_jump_are_not_motion(self):
+        for start_y in (0.5, 0.1):
+            rows = samples([start_y] * 2) + samples([0.5] * 8, start_frame=12)
+            self.assertEqual([], self.analyze(rows))
+
+    def test_adaptation_does_not_relax_minimum_count(self):
+        rows = samples([0.1, 0.2, 0.3, 0.4], fps=10)
+        self.assertEqual([], self.analyze(rows))
+        self.assertTrue(all(r["fit_status"] == "insufficient_evidence" for r in rows))
+        self.assertTrue(all("too_few_observations" in r["fit_reason"] for r in rows))
+
+    def test_adaptive_cli_can_be_disabled(self):
+        self.assertFalse(motion.parse_args(["--video", "test.mp4", "--no-adaptive-window"]).config.adaptive_window)
+
+    def test_neutral_step_preserves_unfinished_candidate(self):
+        rows = accepted_fits([0.50, 0.48, 0.46, 0.46, 0.44, 0.42])
+        events = motion.infer_events(rows, motion.MotionConfig())
+        self.assertEqual(["outward"], [event["direction"] for event in events])
+        self.assertEqual("stationary_or_uncertain", rows[3]["motion"])
+        self.assertEqual("up", rows[3]["candidate_direction"])
+        self.assertEqual(2, rows[3]["candidate_hits"])
+
+    def test_opposite_motion_replaces_unfinished_candidate(self):
+        rows = accepted_fits([0.50, 0.48, 0.46, 0.48, 0.50, 0.52, 0.54])
+        events = motion.infer_events(rows, motion.MotionConfig())
+        self.assertEqual(["inward"], [event["direction"] for event in events])
+        self.assertAlmostEqual(0.08, events[0]["displacement_normalized"])
+
+    def test_same_direction_stays_locked_after_incomplete_opposite_motion(self):
+        rows = accepted_fits([0.10, 0.13, 0.16, 0.19, 0.17, 0.15,
+                              0.18, 0.21, 0.24, 0.27])
+        events = motion.infer_events(rows, motion.MotionConfig())
+        self.assertEqual(["inward"], [event["direction"] for event in events])
 
     def test_direction_and_one_count_for_long_continuous_movement(self):
         rows = samples([0.1 + i * 0.006 for i in range(100)])

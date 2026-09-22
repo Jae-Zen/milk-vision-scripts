@@ -1,0 +1,163 @@
+[
+  {
+    "frame_index": 135,
+    "timestamp_seconds": 4.497795,
+    "track_id": null,
+    "confidence": 0.15064334869384766,
+    "center_y_normalized": 0.03819084477114987
+  },
+  {
+    "frame_index": 139,
+    "timestamp_seconds": 4.631063,
+    "track_id": null,
+    "confidence": 0.7642577886581421,
+    "center_y_normalized": 0.12268669264657157
+  },
+  {
+    "frame_index": 140,
+    "timestamp_seconds": 4.66438,
+    "track_id": 1,
+    "confidence": 0.5743058919906616,
+    "center_y_normalized": 0.15909553657878528
+  },
+  {
+    "frame_index": 141,
+    "timestamp_seconds": 4.697697,
+    "track_id": 1,
+    "confidence": 0.7844879627227783,
+    "center_y_normalized": 0.19306474846678895
+  },
+  {
+    "frame_index": 151,
+    "timestamp_seconds": 5.030867000000001,
+    "track_id": 1,
+    "confidence": 0.3926967680454254,
+    "center_y_normalized": 0.35810048239571707
+  },
+  {
+    "frame_index": 152,
+    "timestamp_seconds": 5.064184,
+    "track_id": 1,
+    "confidence": 0.7708421349525452,
+    "center_y_normalized": 0.3685318711516145
+  },
+  {
+    "frame_index": 153,
+    "timestamp_seconds": 5.097501,
+    "track_id": 1,
+    "confidence": 0.8840164542198181,
+    "center_y_normalized": 0.3768445671378792
+  },
+  {
+    "frame_index": 154,
+    "timestamp_seconds": 5.1308180000000005,
+    "track_id": 1,
+    "confidence": 0.8479906916618347,
+    "center_y_normalized": 0.380860947943353
+  },
+  {
+    "frame_index": 155,
+    "timestamp_seconds": 5.164135,
+    "track_id": 1,
+    "confidence": 0.8040491938591003,
+    "center_y_normalized": 0.3818355907093395
+  },
+  {
+    "frame_index": 156,
+    "timestamp_seconds": 5.197452,
+    "track_id": 1,
+    "confidence": 0.1945062130689621,
+    "center_y_normalized": 0.38439242870776685
+  },
+  {
+    "frame_index": 157,
+    "timestamp_seconds": 5.2307690000000004,
+    "track_id": 1,
+    "confidence": 0.42712193727493286,
+    "center_y_normalized": 0.3829183702345018
+  },
+  {
+    "frame_index": 158,
+    "timestamp_seconds": 5.264086,
+    "track_id": 1,
+    "confidence": 0.7967696785926819,
+    "center_y_normalized": 0.38210244612260297
+  },
+  {
+    "frame_index": 159,
+    "timestamp_seconds": 5.297403,
+    "track_id": 1,
+    "confidence": 0.8233267068862915,
+    "center_y_normalized": 0.3853134675459428
+  },
+  {
+    "frame_index": 160,
+    "timestamp_seconds": 5.33072,
+    "track_id": 1,
+    "confidence": 0.7187065482139587,
+    "center_y_normalized": 0.39196908628785765
+  },
+  {
+    "frame_index": 262,
+    "timestamp_seconds": 8.729054,
+    "track_id": null,
+    "confidence": 0.7682350277900696,
+    "center_y_normalized": 0.2937770447173676
+  },
+  {
+    "frame_index": 263,
+    "timestamp_seconds": 8.762371,
+    "track_id": 2,
+    "confidence": 0.894690752029419,
+    "center_y_normalized": 0.2669427983172528
+  },
+  {
+    "frame_index": 264,
+    "timestamp_seconds": 8.795688,
+    "track_id": 2,
+    "confidence": 0.8713486790657043,
+    "center_y_normalized": 0.23755827197780857
+  },
+  {
+    "frame_index": 265,
+    "timestamp_seconds": 8.829005,
+    "track_id": 2,
+    "confidence": 0.9341475963592529,
+    "center_y_normalized": 0.2045597844309621
+  },
+  {
+    "frame_index": 266,
+    "timestamp_seconds": 8.862322,
+    "track_id": 2,
+    "confidence": 0.9093945026397705,
+    "center_y_normalized": 0.1524837233803489
+  },
+  {
+    "frame_index": 267,
+    "timestamp_seconds": 8.895639000000001,
+    "track_id": 2,
+    "confidence": 0.9290916919708252,
+    "center_y_normalized": 0.12662356859677798
+  },
+  {
+    "frame_index": 268,
+    "timestamp_seconds": 8.928956000000001,
+    "track_id": 2,
+    "confidence": 0.9368681907653809,
+    "center_y_normalized": 0.1007787324004359
+  },
+  {
+    "frame_index": 269,
+    "timestamp_seconds": 8.962273,
+    "track_id": 2,
+    "confidence": 0.9397751688957214,
+    "center_y_normalized": 0.07240380250014268
+  },
+  {
+    "frame_index": 270,
+    "timestamp_seconds": 8.99559,
+    "track_id": 2,
+    "confidence": 0.8093317151069641,
+    "center_y_normalized": 0.035313559817029286
+  }
+]

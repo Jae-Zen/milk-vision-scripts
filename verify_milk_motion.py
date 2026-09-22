@@ -34,6 +34,7 @@ def status(message: str) -> None:
 class MotionConfig:
     confidence: float = 0.40
     window_seconds: float = 0.60
+    adaptive_window: bool = True
     max_gap_seconds: float = 0.50
     min_observations: int = 5
     min_fit_seconds: float = 0.12
@@ -67,6 +68,9 @@ class LocalFit:
     inlier_fraction: float
     residual: float
     accepted: bool
+    reason: str
+    inlier_count: int
+    inlier_span_seconds: float
 
 
 def robust_local_fit(times: Sequence[float], ys: Sequence[float], at: float,
@@ -93,24 +97,54 @@ def robust_local_fit(times: Sequence[float], ys: Sequence[float], at: float,
     fraction = len(inliers) / len(times)
     residual = observed_y - y
     # Require temporal support from inliers, not merely the outlier endpoints.
-    accepted = (len(inliers) >= config.min_observations
-                and fraction >= config.min_inlier_fraction
-                and times[inliers[-1]] - times[inliers[0]] >= config.min_fit_seconds
-                and abs(residual) <= config.residual_threshold)
-    return LocalFit(y, slope, fraction, residual, accepted)
+    span = times[inliers[-1]] - times[inliers[0]] if inliers else 0.0
+    failures = []
+    if len(inliers) < config.min_observations:
+        failures.append("too_few_inliers")
+    if fraction < config.min_inlier_fraction:
+        failures.append("low_inlier_fraction")
+    if span < config.min_fit_seconds:
+        failures.append("short_inlier_span")
+    if abs(residual) > config.residual_threshold:
+        failures.append("observation_outlier")
+    return LocalFit(y, slope, fraction, residual, not failures,
+                    ";".join(failures) or "accepted", len(inliers), span)
+
+
+def supported_window(segment: list[dict[str, Any]], left: int, right: int,
+                     at: float, config: MotionConfig) -> tuple[list[dict[str, Any]], bool]:
+    """Extend sparse centered support toward nearest observations, within full width.
+
+    Only insufficient count/span triggers adaptation, never a rejected regression.
+    Preserve segment boundaries and the same maximum total window duration.
+    """
+    initial = (left, right)
+    if config.adaptive_window:
+        while (right - left < config.min_observations or
+               segment[right - 1]["timestamp_seconds"] - segment[left]["timestamp_seconds"] < config.min_fit_seconds):
+            choices = []
+            if left > 0 and segment[right - 1]["timestamp_seconds"] - segment[left - 1]["timestamp_seconds"] <= config.window_seconds:
+                choices.append((abs(segment[left - 1]["timestamp_seconds"] - at), left - 1, right))
+            if right < len(segment) and segment[right]["timestamp_seconds"] - segment[left]["timestamp_seconds"] <= config.window_seconds:
+                choices.append((abs(segment[right]["timestamp_seconds"] - at), left, right + 1))
+            if not choices:
+                break
+            _, left, right = min(choices)
+    return segment[left:right], initial != (left, right)
 
 
 def infer_events(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[str, Any]]:
-    """Difference accepted fitted coordinates and confirm substantial motion.
+    """Confirm net directional movement from accepted fitted coordinates.
 
-    Neutral motion does not re-arm a previously counted direction. Only a
-    confirmed opposite movement permits another count within the same segment.
+    Neutral steps preserve a pending candidate, while an opposite moving step
+    replaces an unfinished candidate. A counted direction stays locked until a
+    complete opposite event is emitted within the same segment.
     """
     events: list[dict[str, Any]] = []
     previous = None
     candidate = 0
-    candidate_start = 0.0
-    displacement = 0.0
+    candidate_start_time = 0.0
+    candidate_start_y = 0.0
     hits = 0
     last_emitted_sign = 0
     for row in rows:
@@ -121,7 +155,7 @@ def infer_events(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[
             continue
         dt = row["timestamp_seconds"] - previous["timestamp_seconds"]
         if dt > config.max_gap_seconds:
-            candidate, displacement, hits = 0, 0.0, 0
+            candidate, hits = 0, 0
             previous = row
             continue
         delta = row["fitted_y_normalized"] - previous["fitted_y_normalized"]
@@ -134,15 +168,19 @@ def infer_events(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[
         if sign * row["slope_per_second"] < config.min_speed:
             sign = 0
         row["motion"] = "down" if sign > 0 else "up" if sign < 0 else "stationary_or_uncertain"
-        if sign == 0:
-            candidate, displacement, hits = 0, 0.0, 0
-        else:
+        if sign != 0:
             if sign != candidate:
-                candidate, displacement, hits = sign, 0.0, 0
-                candidate_start = previous["timestamp_seconds"]
-            displacement += delta
+                candidate, hits = sign, 0
+                candidate_start_time = previous["timestamp_seconds"]
+                candidate_start_y = previous["fitted_y_normalized"]
             hits += 1
-            duration = row["timestamp_seconds"] - candidate_start
+            # Net displacement from the candidate anchor avoids inflating travel
+            # by summing coordinate fluctuations. Neutral steps preserve state.
+            displacement = row["fitted_y_normalized"] - candidate_start_y
+            duration = row["timestamp_seconds"] - candidate_start_time
+            row.update(candidate_displacement_normalized=displacement,
+                       candidate_duration_seconds=duration, candidate_hits=hits,
+                       candidate_direction="down" if candidate > 0 else "up")
             if (sign != last_emitted_sign and hits >= 3
                     and sign * displacement >= config.min_displacement
                     and duration >= config.confirm_seconds):
@@ -154,6 +192,13 @@ def infer_events(rows: list[dict[str, Any]], config: MotionConfig) -> list[dict[
                 events.append(event)
                 row["event"] = direction
                 last_emitted_sign = sign
+        elif candidate:
+            # Record that an existing candidate survived this neutral observation.
+            displacement = row["fitted_y_normalized"] - candidate_start_y
+            row.update(candidate_displacement_normalized=displacement,
+                       candidate_duration_seconds=row["timestamp_seconds"] - candidate_start_time,
+                       candidate_hits=hits,
+                       candidate_direction="down" if candidate > 0 else "up")
         previous = row
     return events
 
@@ -163,10 +208,15 @@ def analyze_detections(rows: list[dict[str, Any]], config: MotionConfig) -> list
     config.validate()
     tracks: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
+        # Re-analysis must not retain previous fits, events or diagnostics.
+        for field in CSV_FIELDS[14:]:
+            row.pop(field, None)
         if row["track_id"] is None:
             row["fit_status"] = "untracked"
+            row["fit_reason"] = "no_confirmed_track_id"
         elif row["confidence"] < config.confidence:
             row["fit_status"] = "low_confidence"
+            row["fit_reason"] = "below_confidence_threshold"
         else:
             tracks.setdefault(row["track_id"], []).append(row)
     events = []
@@ -193,14 +243,22 @@ def analyze_detections(rows: list[dict[str, Any]], config: MotionConfig) -> list
                     left += 1
                 while right < len(segment) and segment[right]["timestamp_seconds"] <= time + half_window:
                     right += 1
-                window = segment[left:right]
+                window, adapted = supported_window(segment, left, right, time, config)
+                span = window[-1]["timestamp_seconds"] - window[0]["timestamp_seconds"]
+                row.update(window_observations=len(window), window_span_seconds=span,
+                           window_adapted=adapted)
                 fit = robust_local_fit([r["timestamp_seconds"] for r in window],
                                        [r["center_y_normalized"] for r in window],
                                        time, row["center_y_normalized"], config)
                 row["fit_status"] = "insufficient_evidence"
+                row["fit_reason"] = ";".join(reason for failed, reason in (
+                    (len(window) < config.min_observations, "too_few_observations"),
+                    (span < config.min_fit_seconds, "short_window_span")) if failed)
                 if fit is not None:
                     row.update(fitted_y_normalized=fit.y, slope_per_second=fit.slope,
                                inlier_fraction=fit.inlier_fraction, residual_normalized=fit.residual,
+                               fit_reason=fit.reason, inlier_count=fit.inlier_count,
+                               inlier_span_seconds=fit.inlier_span_seconds,
                                fit_status="accepted" if fit.accepted else "rejected")
             events.extend(infer_events(segment, config))
     return sorted(events, key=lambda event: (event["frame_index"], event["track_id"]))
@@ -299,7 +357,10 @@ CSV_FIELDS: tuple[str, ...] = ("frame_index", "timestamp_seconds", "detection_in
               "frame_width", "frame_height", "x1", "y1", "x2", "y2", "center_x", "center_y",
               "center_y_normalized", "segment_id", "raw_delta_y_normalized", "raw_delta_seconds",
               "fitted_y_normalized", "slope_per_second", "inlier_fraction", "residual_normalized",
-              "fit_status", "fitted_delta_y_normalized", "fitted_velocity_per_second", "motion", "event")
+              "fit_status", "fitted_delta_y_normalized", "fitted_velocity_per_second", "motion", "event",
+              "fit_reason", "window_observations", "window_span_seconds", "window_adapted",
+              "inlier_count", "inlier_span_seconds", "candidate_displacement_normalized",
+              "candidate_duration_seconds", "candidate_hits", "candidate_direction")
 
 
 def plot_motion(rows: list[dict[str, Any]], events: list[dict[str, Any]], path: Path,
@@ -312,8 +373,22 @@ def plot_motion(rows: list[dict[str, Any]], events: list[dict[str, Any]], path: 
         raise VerificationError("Matplotlib is required for the motion plot.") from exc
     fig, (position, velocity) = plt.subplots(2, 1, figsize=(13, 8), sharex=True, layout="constrained")
     try:
-        position.scatter([r["timestamp_seconds"] for r in rows], [r["center_y_normalized"] for r in rows],
-                         s=10, c="#bbbbbb", alpha=0.65, label="All milk detections")
+        styles = {"accepted": ("#17834c", "o", "Accepted observation (event checks separate)"),
+                  "untracked": ("#777777", "s", "Untracked: no confirmed ID"),
+                  "low_confidence": ("#bb8700", "v", "Below fit confidence threshold"),
+                  "insufficient_evidence": ("#8b46b0", "X", "Insufficient observations / time span"),
+                  "rejected": ("#c74040", "x", "Rejected fit / observation")}
+        for fit_status, (color, marker, label) in styles.items():
+            selected = [r for r in rows if r["fit_status"] == fit_status]
+            if selected:
+                position.scatter([r["timestamp_seconds"] for r in selected],
+                                 [r["center_y_normalized"] for r in selected],
+                                 s=30, c=color, marker=marker, alpha=0.85, label=f"{label} ({len(selected)})", zorder=3)
+        adapted = [r for r in rows if r.get("window_adapted")]
+        if adapted:
+            position.scatter([r["timestamp_seconds"] for r in adapted],
+                             [r["center_y_normalized"] for r in adapted],
+                             s=85, facecolors="none", edgecolors="#1673b1", label="Adapted window", zorder=4)
         groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for row in rows:
             if "segment_id" in row:
@@ -321,11 +396,9 @@ def plot_motion(rows: list[dict[str, Any]], events: list[dict[str, Any]], path: 
         for (track_id, segment_id), group in groups.items():
             times = [r["timestamp_seconds"] for r in group]
             fitted = [r["fitted_y_normalized"] if r["fit_status"] == "accepted" else math.nan for r in group]
-            line, = position.plot(times, fitted, linewidth=1.8, label=f"Track {track_id}, segment {segment_id}")
+            line, = position.plot(times, fitted, linewidth=1.8,
+                                  label=f"Accepted fit: track {track_id}, segment {segment_id}" if len(groups) <= 12 else "_nolegend_")
             velocity.plot(times, [r.get("fitted_velocity_per_second", math.nan) for r in group], color=line.get_color())
-        rejected = [r for r in rows if r["fit_status"] == "rejected"]
-        position.scatter([r["timestamp_seconds"] for r in rejected], [r["center_y_normalized"] for r in rejected],
-                         marker="x", c="#c74040", s=24, label="Rejected fit / observation")
         for event in events:
             color = "#198754" if event["direction"] == "inward" else "#be4b27"
             position.axvline(event["timestamp_seconds"], color=color, alpha=0.65, linestyle=":")
@@ -334,7 +407,7 @@ def plot_motion(rows: list[dict[str, Any]], events: list[dict[str, Any]], path: 
         position.set(title="Milk motion: raw centers and robust rolling fits (no spatial gate)",
                      ylabel="Center y / frame height")
         position.invert_yaxis()
-        if len(groups) <= 12:
+        if rows:
             position.legend(fontsize=8, loc="best")
         velocity.axhline(0, color="#555555", linewidth=0.8)
         velocity.axhline(config.min_speed, color="#999999", linestyle="--", linewidth=0.8)
@@ -404,6 +477,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ):
         parser.add_argument(f"--{name}", type=float, default=default, help=help_text)
     parser.add_argument("--min-observations", type=int, default=5)
+    parser.add_argument("--adaptive-window", action=argparse.BooleanOptionalAction, default=True,
+                        help="Extend sparse centered windows within --window-seconds total span (default: enabled)")
     args = parser.parse_args(argv)
     args.config = MotionConfig(confidence=args.conf, **{name: getattr(args, name)
                                for name in MotionConfig.__dataclass_fields__ if name != "confidence"})

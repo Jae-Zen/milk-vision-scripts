@@ -709,6 +709,12 @@ when `--debug` is enabled; ordinary runs create no CSV, JSON or PNG files.
    the history when confident observations are more than `--max-gap-seconds 0.50`
    apart. Weak observations cannot bridge this evidence gap.
 4. Fit a local line `y(t) = a + b*t` in a centered `--window-seconds 0.60` window.
+   If this window has too few observations or too little time support, extend
+   toward the nearest confident observations in the same segment until both
+   requirements are met, keeping the **total span at most 0.60 seconds**. This
+   allows asymmetric support near sparse detections without lowering the minimum
+   count. Use `--no-adaptive-window` to restore strictly centered windows.
+   Rejected regressions are not retried with different windows.
    Use a univariate Theil-Sen estimate: median pairwise slope and median intercept.
    At most 61 uniformly spaced observations determine the slope; all window
    observations participate in residual checks. This avoids a new scikit-learn
@@ -721,7 +727,11 @@ when `--debug` is enabled; ordinary runs create no CSV, JSON or PNG files.
    `delta_y = fitted_y_now - fitted_y_previous`,
    `velocity = delta_y / elapsed_seconds`. Confirm movement only if the finite
    difference and local slope agree, speed is at least `--min-speed 0.04` frame
-   heights/second, and at least three increments cover `--min-displacement 0.08`
+   heights/second. A moving step starts or continues a directional candidate;
+   neutral steps retain that candidate, and clear opposite motion replaces an
+   unfinished candidate. Candidate displacement is the net fitted position change
+   from its starting coordinate rather than a sum of individual steps. Confirm an
+   event when at least three moving increments cover `--min-displacement 0.08`
    frame heights over `--confirm-seconds 0.15` seconds or more. These thresholds
    describe motion magnitude and quality; there is no fixed y boundary.
 
@@ -729,9 +739,11 @@ Image y increases downward. The default `--inward down` maps positive motion to
 entering and negative motion to leaving, following the existing verifier's camera
 convention. Use `--inward up` if the camera geometry is reversed.
 
-One continuous direction is counted once per track segment. A pause does not
-re-arm that direction; a confirmed opposite movement does. A sufficiently long
-evidence gap starts a new segment. A single global best-fit line would hide
+One continuous direction is counted once per track segment. A pause preserves a
+pending movement but does not re-arm a direction already counted. Only a complete
+opposite event re-arms it; an incomplete opposite candidate is discarded if the
+original direction resumes. A sufficiently long evidence gap starts a new segment.
+A single global best-fit line would hide
 reversals; the local fits preserve sufficiently long entering/leaving episodes.
 Centered windows use future observations, so this implementation analyzes the
 complete video before emitting events. It is not a zero-latency live detector.
@@ -760,10 +772,16 @@ writes these three files; repeating the same video stem in the same directory
 overwrites them. The script does not open a video or plot window.
 
 - `<video_stem>_motion.csv`: raw detections, fit status, fitted coordinates,
-  residuals, local slopes, finite differences, velocities, and events.
+  residuals, local slopes, finite differences, velocities, and events. Includes
+  explicit fit failure reasons, window count/span, whether the window adapted,
+  inlier count/span, and directional candidate travel/duration/hit count.
 - `<video_stem>_motion.json`: video metadata, thresholds, events, and net estimate.
-- `<video_stem>_motion.png`: raw y positions, robust fitted trajectories, rejected
-  observations, event markers, and fitted velocity over time.
+- `<video_stem>_motion.png`: every saved raw y position labelled by status:
+  accepted (green circles), untracked (grey squares), low confidence (gold
+  triangles), insufficient evidence (purple crosses), or rejected (red crosses).
+  Blue rings identify adapted windows. Coloured trajectories show accepted fits;
+  vertical event markers identify counted movements. Accepted fits still need
+  to pass the event checks. The lower panel shows fitted velocity over time.
 
 CSV rows exist only for detections; missing frame indices are not interpolated.
 Raw differences are between consecutive confident observations of the same track
