@@ -157,8 +157,8 @@ Adding one milk prints `1`, removing one prints `-1`, and removing then returnin
 milk prints `0`. Each crossing contributes independently: an initial outward event
 or a final inward event is counted even without a paired opposite-direction event.
 There are no hand detections, hand/milk associations, payload windows, or paired
-hand transactions in this verifier. Other utilities in this repository can still
-use the model's hand class.
+hand transactions in this verifier. The remaining verification commands filter
+inference to the model's milk class.
 
 This measures movement across the gate, not whether milk was released onto a shelf.
 A temporarily invisible milk item is not automatically treated as removed.
@@ -221,8 +221,8 @@ the low-confidence interval removes BoT-SORT's opportunity to use weak matches.
 
 ### Gate confirmation and timeouts
 
-With the default gate at `0.20` of image height and hysteresis `0.04`, confident
-centers with normalized y `<= 0.16` are outside and those with y `>= 0.24` are
+With the default gate at `0.27` of image height and hysteresis `0.04`, confident
+centers with normalized y `<= 0.23` are outside and those with y `>= 0.31` are
 inside (image y increases downward). The band between them is undecided.
 
 At approximately 30 FPS, the script requires three qualifying confident
@@ -257,8 +257,8 @@ python -m Scripts.milk_vision placement `
 
 Stdout stays a single integer. Debug mode adds configuration and net delta to the
 crossing events already shown on stderr, without duplicating those events.
-`--debug-dir` is optional; without it files are written beside this
-script. Repeating a run overwrites the same debug filenames in that directory:
+`--debug-dir` is optional; without it files are written directly inside `Scripts`,
+outside the `milk_vision` package. Repeating a run overwrites the same debug filenames:
 
 ```text
 vid_11_tracking_debug.csv
@@ -298,28 +298,29 @@ Input/inference failures caught by the verifier produce an `ERROR:` message on
 stderr and exit code `1`, rather than being reported as zero inventory change.
 This includes missing paths, videos that cannot open or yield no frames, invalid
 FPS, and a missing milk class or tracker configuration. Argument-parser errors
-(such as a missing `--video` or an out-of-range CLI value) print usage and exit
-with code `2`. Neither is a successful integer result.
+(such as omitting both `--video` and `--folder`, or an out-of-range CLI value)
+print usage and exit with code `2`. Neither is a successful integer result.
 
 ### Arguments
 
 | Argument | Required/default | Function |
 | --- | --- | --- |
-| `--video PATH` | Required | Input video. |
+| `--video PATH` | One of `--video` or `--folder` | Input video. |
+| `--folder PATH` | One of `--video` or `--folder` | Process a folder sequentially; see folder commands below. |
 | `--model PATH` | `Models/milk-vision-v4s.pt` | Checkpoint containing a milk class. |
 | `--conf FLOAT` | `0.40` | Minimum confidence for crossing observations. |
 | `--track-conf FLOAT` | `0.10` | Lower detector threshold feeding BoT-SORT. |
-| `--gate-y FLOAT` | `0.20` | Normalized gate position, from `0.05` to `0.95`. |
+| `--gate-y FLOAT` | `0.27` | Normalized gate position, from `0.05` to `0.95`. |
 | `--device VALUE` | Automatic | Ultralytics device such as `0` or `cpu`. |
 | `--debug` | Off | Write CSV and annotated video. |
-| `--debug-dir PATH` | Beside script | Output directory for `--debug`. |
+| `--debug-dir PATH` | `Scripts` | Output directory for `--debug`. |
 
 Show the argument help with `python -m Scripts.milk_vision placement --help`.
 
 ## Milk motion estimation (experimental, no boundary lines)
 
-Estimate milk motion from per-object y-coordinate histories. This separate script
-does not change the gate-based verifier. Its output is a **motion-derived estimate**:
+Estimate milk motion from one logical y-coordinate trajectory. This command uses
+a separate algorithm from placement. Its output is a **motion-derived estimate**:
 vertical movement cannot by itself establish that an item crossed into the fridge
 or was released onto a shelf.
 
@@ -419,8 +420,8 @@ overwrites them. The script does not open a video or plot window.
 CSV rows exist only for detections; missing frame indices are not interpolated.
 Raw differences are between consecutive selected detections in the same logical
 segment; fitted differences are between accepted fits. Each uses its actual time
-gap. Every coordinate admitted by `--track-conf` is fitted regardless of its
-confidence or tracker-ID status. A rejected-fit category is not used: constructed
+gap. Each selected highest-confidence box is eligible for fitting regardless of
+tracker-ID status; other same-frame boxes remain diagnostic only. Constructed
 fits are not rejected by statistical quality checks.
 The y axis on the position plot increases downward like the video. Dashed lines on
 the velocity plot show speed thresholds, not spatial boundaries.
@@ -446,21 +447,10 @@ videos, and inspect event directions/times as well as net totals: two wrong even
 can cancel to a correct zero. The existing gate verifier may be more selective
 when a fixed physical entrance corresponds well to its boundary.
 
-Initial spot checks with `milk-vision-v4n.pt` and the default motion thresholds
-produced the following results. These are individual clips, not accuracy estimates:
-
-| Folder / clip | Inferred events | Net |
-| --- | --- | --- |
-| `add_milk/milk_added.mp4` | inward | `+1` |
-| `remove_milk/video_20260904_203519.mp4` | outward | `-1` |
-| `add_and_remove_milk/video_20260904_204755.mp4` | inward, outward | `0` |
-| `reposition_milk_or_do_nothing/video_20260904_205222.mp4` | inward, outward | `0` |
-
-The last row demonstrates why net totals alone are insufficient: the no-change
-category still produced two directional events. Artifacts from these runs are
-under `debug/milk_motion/smoke`. The complete repository test suite passed 70
-tests, including 14 tests for motion regression, filtering, gaps, reversals,
-independent tracks, coordinate retention, argument validation, and artifacts.
+Model weights, videos, and diagnostic artifacts are supplied separately and are
+not included in this repository. Use the commands above to evaluate the current
+implementation on your own labeled clips; passing automated tests does not
+establish model accuracy.
 
 ## Folder verification commands
 
