@@ -3,28 +3,46 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import verify_milk_motion as motion
+from milk_vision import cli, diagnostics, inference, motion, types
 
 
 def samples(ys, track_id: int | None = 1, start_frame=0, confidence=0.9, fps=30):
-    return [{"frame_index": start_frame + i, "timestamp_seconds": (start_frame + i) / fps,
-             "track_id": track_id, "confidence": confidence, "center_y_normalized": y}
-            for i, y in enumerate(ys)]
+    return [
+        {
+            "frame_index": start_frame + i,
+            "timestamp_seconds": (start_frame + i) / fps,
+            "track_id": track_id,
+            "confidence": confidence,
+            "center_y_normalized": y,
+        }
+        for i, y in enumerate(ys)
+    ]
 
 
-def accepted_fits(ys, slopes=None, step=0.1):
+def accepted_fits(ys, slopes=None, step=0.1) -> list[types.MotionRow]:
     """Minimal accepted-fit rows for testing event state independently of fitting."""
     slopes = slopes or [0.0] + [(ys[i] - ys[i - 1]) / step for i in range(1, len(ys))]
-    return [{"frame_index": i, "timestamp_seconds": i * step, "track_id": 1,
-             "logical_track_id": 0, "segment_id": 0,
-             "fit_status": "accepted", "fitted_y_normalized": y,
-             "slope_per_second": slopes[i]} for i, y in enumerate(ys)]
+    return [
+        {
+            "frame_index": i,
+            "timestamp_seconds": i * step,
+            "track_id": 1,
+            "confidence": 0.9,
+            "center_y_normalized": y,
+            "logical_track_id": 0,
+            "segment_id": 0,
+            "fit_status": "accepted",
+            "fitted_y_normalized": y,
+            "slope_per_second": slopes[i],
+        }
+        for i, y in enumerate(ys)
+    ]
 
 
 class MotionTests(unittest.TestCase):
@@ -32,7 +50,9 @@ class MotionTests(unittest.TestCase):
         return motion.analyze_detections(rows, motion.MotionConfig(**kwargs))
 
     def test_sparse_recorded_add_and_remove(self):
-        rows = json.loads((Path(__file__).parent / "fixtures" / "milk_motion_204912.json").read_text())
+        rows = json.loads(
+            (Path(__file__).parent / "fixtures" / "milk_motion_204912.json").read_text()
+        )
         events = self.analyze(rows)
         self.assertEqual(["inward", "outward"], [e["direction"] for e in events])
         self.assertEqual([139, 265], [e["frame_index"] for e in events])
@@ -56,6 +76,9 @@ class MotionTests(unittest.TestCase):
         rows = accepted_fits([0.50, 0.48, 0.46, 0.46, 0.44, 0.42])
         events = motion.infer_events(rows, motion.MotionConfig())
         self.assertEqual(["outward"], [event["direction"] for event in events])
+        assert "motion" in rows[3]
+        assert "candidate_direction" in rows[3]
+        assert "candidate_hits" in rows[3]
         self.assertEqual("stationary_or_uncertain", rows[3]["motion"])
         self.assertEqual("up", rows[3]["candidate_direction"])
         self.assertEqual(2, rows[3]["candidate_hits"])
@@ -67,8 +90,9 @@ class MotionTests(unittest.TestCase):
         self.assertAlmostEqual(0.08, events[0]["displacement_normalized"])
 
     def test_same_direction_stays_locked_after_incomplete_opposite_motion(self):
-        rows = accepted_fits([0.10, 0.13, 0.16, 0.19, 0.17, 0.15,
-                              0.18, 0.21, 0.24, 0.27])
+        rows = accepted_fits(
+            [0.10, 0.13, 0.16, 0.19, 0.17, 0.15, 0.18, 0.21, 0.24, 0.27]
+        )
         events = motion.infer_events(rows, motion.MotionConfig())
         self.assertEqual(["inward"], [event["direction"] for event in events])
 
@@ -81,12 +105,16 @@ class MotionTests(unittest.TestCase):
 
     def test_up_and_camera_mapping(self):
         for inward, expected in [("down", "outward"), ("up", "inward")]:
-            events = self.analyze(samples([0.8 - i * 0.01 for i in range(45)]), inward=inward)
+            events = self.analyze(
+                samples([0.8 - i * 0.01 for i in range(45)]), inward=inward
+            )
             self.assertEqual([expected], [e["direction"] for e in events])
 
     def test_round_trip_preserves_reversal(self):
         ys = [0.1 + i * 0.01 for i in range(45)] + [0.55 - i * 0.01 for i in range(46)]
-        self.assertEqual(["inward", "outward"], [e["direction"] for e in self.analyze(samples(ys))])
+        self.assertEqual(
+            ["inward", "outward"], [e["direction"] for e in self.analyze(samples(ys))]
+        )
 
     def test_stationary_jitter_and_isolated_false_positive(self):
         ys = [0.5 + (0.002 if i % 2 else -0.002) for i in range(100)]
@@ -106,7 +134,9 @@ class MotionTests(unittest.TestCase):
         rows = samples([0.1 + i * 0.01 for i in range(45)], 1)
         rows += samples([0.8 - i * 0.01 for i in range(45)], 2, confidence=0.8)
         self.assertEqual(["inward"], [e["direction"] for e in self.analyze(rows)])
-        self.assertTrue(all(row["fit_status"] == "same_frame_duplicate" for row in rows[45:]))
+        self.assertTrue(
+            all(row["fit_status"] == "same_frame_duplicate" for row in rows[45:])
+        )
 
     def test_gaps_do_not_create_movement_between_stationary_positions(self):
         rows = samples([0.1] * 20) + samples([0.8] * 20, start_frame=80)
@@ -136,32 +166,56 @@ class MotionTests(unittest.TestCase):
     def test_pause_does_not_recount_same_direction(self):
         ys = [0.1 + i * 0.005 for i in range(50)] + [0.35] * 60
         ys += [0.35 + i * 0.005 for i in range(50)]
-        self.assertEqual(["inward"], [e["direction"] for e in self.analyze(samples(ys))])
+        self.assertEqual(
+            ["inward"], [e["direction"] for e in self.analyze(samples(ys))]
+        )
 
     def test_empty_input_produces_zero_and_artifacts(self):
-        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(0, motion.write_outputs([], [], {}, motion.MotionConfig(), Path(directory), "empty"))
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            diagnostics.write_outputs(
+                types.MotionResult([], [], {}, 0),
+                motion.MotionConfig(),
+                Path(directory),
+                "empty",
+            )
             report = json.loads((Path(directory) / "empty_motion.json").read_text())
             self.assertEqual([], report["events"])
             self.assertTrue((Path(directory) / "empty_motion.png").is_file())
 
     def test_invalid_cli_thresholds(self):
-        for option, value in [("--window-seconds", "nan"), ("--min-speed", "0"),
-                              ("--track-conf", "0"), ("--track-conf", "1.1")]:
-            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-                motion.parse_args(["--video", "test.mp4", option, value])
+        for option, value in [
+            ("--window-seconds", "nan"),
+            ("--min-speed", "0"),
+            ("--track-conf", "0"),
+            ("--track-conf", "1.1"),
+        ]:
+            with (
+                self.subTest(option=option),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                cli.parse_args(["motion", "--video", "test.mp4", option, value])
             self.assertEqual(2, raised.exception.code)
 
     def test_raw_boxes_are_preserved_including_untracked_detection(self):
         import numpy as np
         import torch
         from ultralytics.engine.results import Results
-        result = Results(np.zeros((100, 200, 3), dtype=np.uint8), "test", {0: "milk"},
-                         boxes=torch.tensor([[10, 10, 30, 30, 0.9, 0], [80, 60, 100, 80, 0.2, 0]]))
+
+        result = Results(
+            np.zeros((100, 200, 3), dtype=np.uint8),
+            "test",
+            {0: "milk"},
+            boxes=torch.tensor([[10, 10, 30, 30, 0.9, 0], [80, 60, 100, 80, 0.2, 0]]),
+        )
         tracks = np.array([[11, 11, 31, 31, 7, 0.9, 0, 0]])
-        rows = motion.detection_rows(result, tracks, 3, 30)
+        rows = inference.detection_rows(result, tracks, 3, 30)
         self.assertEqual(2, len(rows))
         self.assertEqual(7, rows[0]["track_id"])
+        assert "center_y" in rows[0]
         self.assertEqual(20, rows[0]["center_y"])
         self.assertIsNone(rows[1]["track_id"])
 

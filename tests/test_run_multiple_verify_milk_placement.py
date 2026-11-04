@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import run_multiple_verify_milk_placement as runner
+from milk_vision import batch as runner
+from milk_vision import cli
 
 
 class VideoDiscoveryTests(unittest.TestCase):
@@ -37,11 +37,13 @@ class MainTests(unittest.TestCase):
                 (folder / f"video_{index}.mp4").touch()
 
             completed = mock.Mock(returncode=0, stdout="0\n", stderr="")
-            with mock.patch.object(
-                runner.subprocess, "run", return_value=completed
-            ) as run:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    code = runner.main(["--folder", str(folder)])
+            with (
+                mock.patch.object(
+                    runner.subprocess, "run", return_value=completed
+                ) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = cli.main(["placement", "--folder", str(folder)])
 
             self.assertEqual(0, code)
             self.assertEqual(55, run.call_count)
@@ -49,9 +51,7 @@ class MainTests(unittest.TestCase):
                 Path(call.args[0][call.args[0].index("--video") + 1]).name
                 for call in run.call_args_list
             ]
-            self.assertEqual(
-                [f"video_{index}.mp4" for index in range(55)], processed
-            )
+            self.assertEqual([f"video_{index}.mp4" for index in range(55)], processed)
 
     def test_forwards_selected_model_to_every_video(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -64,20 +64,23 @@ class MainTests(unittest.TestCase):
             model.touch()
 
             completed = mock.Mock(returncode=0, stdout="0\n", stderr="")
-            with mock.patch.object(
-                runner.subprocess, "run", return_value=completed
-            ) as run:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    code = runner.main(
-                        ["--folder", str(folder), "--model", str(model)]
-                    )
+            with (
+                mock.patch.object(
+                    runner.subprocess, "run", return_value=completed
+                ) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = cli.main(
+                    ["placement", "--folder", str(folder), "--model", str(model)]
+                )
 
             self.assertEqual(0, code)
             self.assertEqual(2, run.call_count)
             for call in run.call_args_list:
                 command = call.args[0]
-                self.assertEqual("--model", command[-2])
-                self.assertEqual(str(model.resolve()), command[-1])
+                self.assertEqual(
+                    str(model.resolve()), command[command.index("--model") + 1]
+                )
 
 
 if __name__ == "__main__":

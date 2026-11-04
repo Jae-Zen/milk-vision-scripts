@@ -10,13 +10,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"}
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT = SCRIPTS_DIR / "fridge items"
 
 
 def natural_key(path: Path) -> list[object]:
     """Sort vid_9 before vid_10."""
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", path.name)]
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", path.name)
+    ]
 
 
 def parse_seconds(value: str) -> float:
@@ -52,11 +56,17 @@ def ask_time_ranges(duration: float) -> list[tuple[float, float]]:
             start = parse_seconds(start_text)
             end = parse_seconds(end_text)
             if end < start:
-                raise ValueError("End time must be greater than or equal to start time.")
+                raise ValueError(
+                    "End time must be greater than or equal to start time."
+                )
             if start > duration:
-                raise ValueError(f"Start time exceeds the video duration ({duration:.2f}s).")
+                raise ValueError(
+                    f"Start time exceeds the video duration ({duration:.2f}s)."
+                )
             if end > duration + 0.02:
-                raise ValueError(f"End time exceeds the video duration ({duration:.2f}s).")
+                raise ValueError(
+                    f"End time exceeds the video duration ({duration:.2f}s)."
+                )
             ranges.append((start, min(end, duration)))
             print(
                 f"  Added range {len(ranges)}: "
@@ -90,7 +100,7 @@ def require_opencv() -> Any:
             "    python -m pip install opencv-python\n",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     return cv2
 
 
@@ -199,7 +209,7 @@ def main() -> int:
         if args.video_dir is not None
         else ask_video_directory()
     )
-    output_dir = Path(__file__).resolve().parent / "fridge items"
+    output_dir = DEFAULT_OUTPUT
 
     if not video_dir.is_dir():
         print(f"Video folder does not exist: {video_dir}", file=sys.stderr)
@@ -208,7 +218,11 @@ def main() -> int:
     cv2 = require_opencv()
 
     videos = sorted(
-        (path for path in video_dir.iterdir() if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS),
+        (
+            path
+            for path in video_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+        ),
         key=natural_key,
     )
     if not videos:
@@ -243,7 +257,9 @@ def main() -> int:
                 print(f"  Skipped: {exc}\n")
                 continue
 
-            print(f"  Duration: {duration:.2f}s | FPS: {fps:.3f} | Frames: {frame_count}")
+            print(
+                f"  Duration: {duration:.2f}s | FPS: {fps:.3f} | Frames: {frame_count}"
+            )
             try:
                 selected_ranges = ask_time_ranges(duration)
                 if not selected_ranges:

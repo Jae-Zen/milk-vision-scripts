@@ -1,19 +1,16 @@
 # Milk vision scripts
 
-This folder contains eight Python utilities:
+This repository contains a frame-extraction utility in `tools` and the `milk_vision` package:
 
-- `auto_label_milk_dataset.py` uses the trained milk/hand segmentation model to create a resumable, upload-ready Ultralytics dataset and ZIP archive.
-- `auto_label_milk_images.py` creates YOLO instance-segmentation labels and review images using a text-prompted YOLOE model.
-- `extract_fridge_frames.py` interactively extracts selected time ranges from videos as JPEG frames.
-- `yolo_segment.py` displays segmentation predictions from an existing segmentation model on images, videos, or cameras.
-- `verify_milk_placement.py` prints signed net milk change from milk-only crossings.
-- `run_multiple_verify_milk_placement.py` sequentially runs the verifier on every video in a folder.
-- `verify_milk_motion.py` estimates signed net milk motion from tracked vertical movement.
-- `run_multiple_verify_milk_motion.py` sequentially runs motion verification on every video in a folder.
+- `tools/extract_fridge_frames.py` interactively extracts selected time ranges from videos as JPEG frames.
+- `milk_vision placement` prints signed net milk change from milk-only crossings.
+- `milk_vision motion` estimates signed net milk motion from tracked vertical movement.
+- Both methods accept `--video` for one video or `--folder` for sequential folder verification.
 
-The standalone `auto_label_milk_video.py` has been removed. The verifier writes
-its own diagnostic video with `--debug`; it does not depend on a separate labeling
-script. For segmentation-mask viewing or recording, use `yolo_segment.py`.
+The `milk_vision` package generates its own diagnostics with `--debug` through
+`milk_vision/diagnostics.py`. Placement writes CSV and annotated video; motion
+writes CSV, JSON, and plots. These workflows do not require a separate viewer
+or labeling script.
 
 This repository supplies scripts, tests, documentation, and configuration, not
 trained models or input datasets. To preserve the default relative paths, clone
@@ -28,23 +25,22 @@ The commands below assume the terminal is in the parent project directory:
 ```text
 Yolo/
   Scripts/                 # This Git repository
+    tools/                 # Frame-extraction utility
+    milk_vision/           # Verification and diagnostics
+    tests/                 # Automated checks and fixtures
   Models/
-    milk-vision-v3.pt       # Verifier default; supply separately
-    milk-vision-v2.pt       # Dataset-labeling default; supply separately
-    yoloe-26l-seg.pt         # Optional YOLOE checkpoint used in examples
+    milk-vision-v4s.pt       # Placement default; supply separately
+    milk-vision-v4n.pt       # Motion default; supply separately
   Dataset/
     videos/                # Supply input videos separately
-    photos/                # Optional input-image folder
-    photos_extracted_vid2-50/ # Dataset-labeling default input, if available
-  sample_img/              # Optional images used in viewer/YOLOE examples
 ```
 
 Paths containing spaces must be enclosed in quotes.
 
-Default paths in the dataset labeler and verifier are resolved relative to their
-script locations. Explicit relative paths are resolved from the terminal's
-current directory. The dataset labeler still defaults to **v2**; changing the
-verifier's default to **v3** did not change the other scripts.
+Default model and diagnostic paths are resolved relative to the project layout,
+independent of the terminal directory. Explicit relative paths are resolved from
+the terminal's current directory. Placement uses **v4s**, while motion uses **v4n**.
+The frame extractor saves images to `Scripts\fridge items`.
 
 The Git ignore rules cover weights, several video formats, ZIPs, resume state,
 and diagnostics, but do not exclude every generated image/label directory.
@@ -66,278 +62,24 @@ python -m pip install -r Scripts/requirements.txt
 ```
 
 `requirements.txt` specifies `ultralytics>=8.4.121,<9` and `lap>=0.5.12,<1`.
-Ultralytics' dependencies include PyTorch, NumPy, and OpenCV. GUI viewing needs
-a working OpenCV display environment. The optional Raspberry Pi camera branch
-also needs `picamera2`, which is not installed by this requirements file.
+Ultralytics' dependencies include PyTorch, NumPy, and OpenCV.
 
 The commands below use `python` from the active environment. Without activation,
 replace `python` with `.\.venv\Scripts\python.exe` in PowerShell.
 
-## `auto_label_milk_dataset.py`
+## Frame-extraction tool
 
-### Purpose
-
-This script labels the extracted fridge frames with the closed-set
-`Models\milk-vision-v2.pt` segmentation model. The required class mapping is fixed
-and validated before dataset output is created; names and IDs must match exactly:
-
-```text
-0: milk
-1: hand
-```
-
-It copies every supported source image unchanged into a deterministic random
-train/validation split (approximately 90/10), writes matching normalized YOLO
-polygon labels, creates an
-empty label for an image with no detections, and packages the completed dataset as
-a ZIP in Ultralytics dataset layout. It does not upload anything automatically
-or create local mask previews.
-
-Only images directly inside `--source` are scanned (BMP, JPEG, PNG, TIFF, WebP).
-Subfolders are ignored, and duplicate filename stems are rejected regardless of
-case. Validation size is rounded and clamped to leave at least one image in each
-split when there are two or more images. A single image goes into training only.
-
-Run it from the project root with all defaults, **only if the default source
-folder and model exist**:
+The frame extractor lives in `Scripts/tools/`. Run it as a file using the commands
+below, or as a module from inside `Scripts`:
 
 ```powershell
-.\.venv\Scripts\python.exe .\Scripts\auto_label_milk_dataset.py
+python -m tools.extract_fridge_frames --help
 ```
 
-The defaults are:
+From the parent `Yolo` directory, use
+`python -m Scripts.tools.extract_fridge_frames` instead.
 
-```text
-source: Dataset\photos_extracted_vid2-50
-model:  Models\milk-vision-v2.pt
-output: Scripts\milk_vision_v2_ultralytics_dataset
-conf:   0.25
-iou:    0.70
-imgsz:  640
-seed:   42
-split:  approximately 90% train / 10% validation
-```
-
-The default image folder is not created by this labeler. In particular,
-`extract_fridge_frames.py` writes to `Scripts\fridge items`, not to
-`Dataset\photos_extracted_vid2-50`. Point the labeler at the folder you actually
-have, for example:
-
-```powershell
-python .\Scripts\auto_label_milk_dataset.py --source ".\Dataset\photos"
-```
-
-With the default output path, a successful run creates this archive for upload:
-
-```text
-Scripts\milk_vision_v2_ultralytics_dataset.zip
-```
-
-The archive contains:
-
-```text
-data.yaml
-train\images
-train\labels
-val\images
-val\labels
-```
-
-Interrupted runs retain completed image/label pairs. Run the same command again to
-resume. The sibling `<output-name>.state.json` records source/model paths, the
-model SHA-256 hash, source filenames/sizes/modification times, split, and inference
-settings. Source image contents are not individually hashed. Pairs with a missing
-or wrong-size image copy, or missing/invalid label text, are regenerated; copied
-image contents are not compared byte-for-byte.
-
-If these recorded settings or inputs change, use a new `--output` directory or
-deliberately restart with `--overwrite`:
-
-```powershell
-.\.venv\Scripts\python.exe .\Scripts\auto_label_milk_dataset.py --overwrite
-```
-
-**Warning:** `--overwrite` deletes the entire selected output directory, its
-sibling ZIP, and its sibling state file before starting again. Keep unrelated
-files out of that directory, and repeat any `--source`, `--model`, or `--output`
-overrides when restarting.
-
-`--batch` and `--device` may be changed while resuming because they are not part of
-the saved compatibility settings; bit-identical inference across devices is not
-guaranteed.
-
-Override performance or inference settings when needed:
-
-```powershell
-.\.venv\Scripts\python.exe .\Scripts\auto_label_milk_dataset.py `
-  --device cpu `
-  --batch 4 `
-  --conf 0.25 `
-  --imgsz 640
-```
-
-### Arguments
-
-| Argument | Default | Function |
-| --- | --- | --- |
-| `--source PATH` | `Dataset\photos_extracted_vid2-50` | Existing folder of input images. |
-| `--model PATH` | `Models\milk-vision-v2.pt` | Existing segmentation checkpoint with exactly `0: milk`, `1: hand`. |
-| `--output PATH` | `Scripts\milk_vision_v2_ultralytics_dataset` | Dataset directory; ZIP and state file are siblings. |
-| `--conf FLOAT` | `0.25` | Minimum prediction confidence from `0` to `1`. |
-| `--iou FLOAT` | `0.70` | Prediction IoU threshold from `0` to `1`. |
-| `--imgsz INTEGER` | `640` | Positive inference image size. |
-| `--device VALUE` | Automatic | Inference device, such as `0` or `cpu`. |
-| `--batch INTEGER` | `8` | Positive number of images per inference batch. |
-| `--seed INTEGER` | `42` | Deterministic split seed. |
-| `--val-fraction FLOAT` | `0.10` | Validation fraction, strictly between `0` and `1`. |
-| `--overwrite` | Off | Delete existing output/state/archive and restart. |
-
-Use `python .\Scripts\auto_label_milk_dataset.py --help` to see the CLI help.
-
-These are model-generated labels, not reviewed ground truth. The random split is
-by **image**, not source video, so neighboring frames from one video can appear
-in both splits; this is not a held-out-video evaluation split.
-
-## `auto_label_milk_images.py`
-
-### Purpose
-
-This is the batch auto-labeling script. It:
-
-1. Reads every supported image directly inside one input folder.
-2. Loads a YOLOE segmentation checkpoint.
-3. Converts one or more text prompts per item class into YOLOE embeddings.
-4. Segments matching objects.
-5. Writes one YOLO segmentation `.txt` file per image.
-6. Writes a review copy of every image with class-colored polygon outlines, item names, and confidence values.
-
-Supported input formats are BMP, JPEG, PNG, TIFF, and WebP. Subfolders are not searched.
-
-Duplicate filename stems are rejected regardless of case. Avoid source images
-named `classes.jpg`, `classes.png`, etc.: their label would collide with the
-`classes.txt` metadata file. This utility does not create a train/validation split,
-`data.yaml`, or a ZIP; use `auto_label_milk_dataset.py` for the closed-set dataset
-workflow.
-
-Each repeated `--class` creates a distinct YOLO training class. Multiple phrases within that `--class` are aliases for the same item. Each label row has standard YOLO segmentation form:
-
-```text
-class_id x1 y1 x2 y2 x3 y3 ...
-```
-
-Polygon coordinates are normalized from `0` to `1`. An image with no accepted detection receives an empty `.txt` file, which is a valid negative training sample. The labels folder also receives `classes.txt`, which records the numeric ID assigned to every configured item.
-
-### Classes and alternative prompts
-
-Repeat `--class` once for every different type of item. Within each occurrence:
-
-- The first quoted value is the output class name and is also used as a YOLOE prompt.
-- Every following quoted value is an alternative prompt for that same item.
-- Class IDs follow command order, starting at `0`.
-
-For example, this configuration creates three training classes:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py `
-  --source ".\sample_img" `
-  --model ".\Models\yoloe-26l-seg.pt" `
-  --class "milk container" "plastic milk jug" "milk bottle" `
-  --class "juice carton" "juice box" "drink carton" `
-  --class "yogurt cup" "yogurt tub" "small yogurt container" `
-  --conf 0.10 `
-  --imgsz 960 `
-  --batch 1
-```
-
-The resulting mapping is:
-
-```text
-0: milk container
-1: juice carton
-2: yogurt cup
-```
-
-Therefore, detections produced by `"milk container"`, `"plastic milk jug"`, or `"milk bottle"` all become class `0`. Juice prompts become class `1`, and yogurt prompts become class `2`.
-
-Do not assign the same prompt phrase to two different classes because the output class would be ambiguous. The script detects and rejects that configuration.
-
-For backward compatibility, `--prompts` still defines alternative phrases for one class only:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py `
-  --source ".\sample_img" `
-  --prompts "plastic milk jug" "milk bottle" "milk container"
-```
-
-This legacy form maps every supplied prompt to class `0`. Do not combine `--prompts` with `--class`. If neither option is supplied, the default is one class named `milk carton`.
-
-### Input folder
-
-If `--source` is omitted, the script asks you to enter or paste the exact image folder:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py
-```
-
-To avoid the interactive question, pass the exact folder on the command line:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py --source "D:\datasets\fridge frames"
-```
-
-### Default output locations
-
-Unless overridden, output is always placed beside the Python script, independent of the terminal's current directory:
-
-```text
-Scripts\segmentation_labels
-Scripts\segmentation_previews
-```
-
-Use different locations with `--labels-dir` and `--previews-dir`:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py `
-  --source "D:\datasets\fridge frames" `
-  --labels-dir "D:\datasets\milk-yolo\labels" `
-  --previews-dir "D:\datasets\milk-yolo\previews"
-```
-
-Explicit relative output paths are resolved from the terminal's current directory. Existing files with matching names are overwritten; unrelated files are retained.
-
-
-If the model name is given without a local path, Ultralytics downloads an official missing checkpoint automatically:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py `
-  --source ".\sample_img" `
-  --model yoloe-26x-seg.pt
-```
-
-### Arguments
-
-| Argument | Default | Function |
-| --- | --- | --- |
-| `--source PATH` | Interactive question | Exact folder containing the input images. |
-| `--model PATH_OR_NAME` | `yoloe-26n-seg.pt` | Local checkpoint path or official Ultralytics checkpoint name. |
-| `--labels-dir PATH` | `Scripts\segmentation_labels` | Destination for YOLO polygon `.txt` files. |
-| `--previews-dir PATH` | `Scripts\segmentation_previews` | Destination for outlined review images. |
-| `--class NAME [ALIAS ...]` | None | Defines one output item and its alternative prompts. Repeat for multiple item classes. |
-| `--prompts TEXT [TEXT ...]` | None | Backward-compatible single-class aliases; all are mapped to class `0`. |
-| `--conf FLOAT` | `0.25` | Minimum accepted confidence from `0` to `1`. Lower values increase recall and false positives. |
-| `--iou FLOAT` | `0.7` | Intersection-over-union threshold used during prediction. |
-| `--imgsz INTEGER` | `640` | Inference image size. Larger sizes can help small objects but use more memory and time. |
-| `--device VALUE` | Automatic | PyTorch device, such as `0` for the first CUDA GPU or `cpu`. |
-| `--batch INTEGER` | `8` | Images processed together. Reduce to `1` if GPU memory is insufficient. |
-| `--line-width INTEGER` | `3` | Polygon-outline width in review images. |
-
-Show the built-in argument help with:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py --help
-```
-
-## `extract_fridge_frames.py`
+## `tools/extract_fridge_frames.py`
 
 ### Purpose
 
@@ -353,7 +95,7 @@ Frame names preserve the video name and original frame number:
 vid_12_frame_00000149.jpg
 ```
 
-The fixed output folder is beside the script:
+The fixed output folder remains directly inside `Scripts`, outside `tools/`:
 
 ```text
 Scripts\fridge items
@@ -368,19 +110,19 @@ stems. There is no output-directory CLI option.
 Let the script ask for the video folder:
 
 ```powershell
-python .\Scripts\extract_fridge_frames.py
+python .\Scripts\tools\extract_fridge_frames.py
 ```
 
 Supply the exact video folder immediately:
 
 ```powershell
-python .\Scripts\extract_fridge_frames.py --video-dir "D:\fridge videos"
+python .\Scripts\tools\extract_fridge_frames.py --video-dir "D:\fridge videos"
 ```
 
 Change JPEG quality from its default of `95`:
 
 ```powershell
-python .\Scripts\extract_fridge_frames.py `
+python .\Scripts\tools\extract_fridge_frames.py `
   --video-dir "D:\fridge videos" `
   --jpeg-quality 90
 ```
@@ -398,116 +140,10 @@ At each start-time prompt:
 Show all arguments with:
 
 ```powershell
-python .\Scripts\extract_fridge_frames.py --help
+python .\Scripts\tools\extract_fridge_frames.py --help
 ```
 
-## `yolo_segment.py`
-
-### Purpose
-
-This is an interactive viewer for an existing YOLO segmentation model. It accepts one image, a folder of images, a video, a USB camera, or a Raspberry Pi camera. It overlays translucent masks, polygon outlines, class names, confidences, and an object count in an OpenCV window.
-
-Image inputs support `.jpg`, `.jpeg`, `.png`, and `.bmp` with lowercase or fully
-uppercase extensions. Video inputs support lowercase `.avi`, `.mov`, `.mp4`,
-`.mkv`, and `.wmv`. Folder scanning is non-recursive and unsorted. This viewer
-does not have the same format list as the image labelers or frame extractor.
-
-This viewer does **not** create YOLO training label files. Use `auto_label_milk_images.py` for label export. It also does not configure YOLOE text prompts, so it is best suited to an already trained, closed-set segmentation checkpoint such as `Models\milk-vision-v2.pt`.
-
-### Required arguments
-
-- `--model PATH` is the exact segmentation checkpoint path.
-- `--source VALUE` is an image path, image-folder path, video path, `usb0`, `usb1`, and so on, or `picamera0`.
-
-### Commands
-
-View one image:
-
-```powershell
-python .\Scripts\yolo_segment.py `
-  --model ".\Models\milk-vision-v2.pt" `
-  --source ".\sample_img\vid_20_frame_00000133.jpg" `
-  --thresh 0.40
-```
-
-View every supported image directly inside a folder:
-
-```powershell
-python .\Scripts\yolo_segment.py `
-  --model ".\Models\milk-vision-v2.pt" `
-  --source ".\sample_img" `
-  --thresh 0.30
-```
-
-View a video resized to 1280 by 720:
-
-```powershell
-python .\Scripts\yolo_segment.py `
-  --model ".\Models\milk-vision-v2.pt" `
-  --source "D:\fridge videos\vid_1.mp4" `
-  --resolution 1280x720
-```
-
-Use the first USB camera:
-
-```powershell
-python .\Scripts\yolo_segment.py `
-  --model ".\Models\milk-vision-v2.pt" `
-  --source usb0 `
-  --resolution 1280x720
-```
-
-Record a video or USB-camera session as `demo1.avi` in the terminal's current directory:
-
-```powershell
-python .\Scripts\yolo_segment.py `
-  --model ".\Models\milk-vision-v2.pt" `
-  --source usb0 `
-  --resolution 1280x720 `
-  --record
-```
-
-`--record` requires `--resolution` and works only with video or USB-camera sources.
-The recording uses MJPG at a fixed **30 FPS**, regardless of input FPS, so source
-videos with another frame rate will not retain their original playback timing.
-It does not copy audio, opens a preview window, and overwrites `demo1.avi`.
-For a segmentation-labeled copy of an existing video, use the same `--record`
-command with `--source` set to the video path instead of `usb0`.
-
-### Viewer-specific caveats
-
-- `--thresh` is only a display filter applied after model inference (strictly
-  greater than the supplied value). It is not passed to YOLO as `conf`, so lowering
-  it cannot recover predictions already filtered out by the model call.
-- The Pi camera branch requires `--resolution` in the current implementation,
-  plus `picamera2` and compatible hardware. Although a `picameraN` index is parsed,
-  the code constructs `Picamera2()` without using that index. Pi recording is not
-  supported by `--record`.
-
-### Window controls
-
-- `Q`: quit.
-- `S`: pause; press another key to resume.
-- `P`: save the currently displayed frame as `capture.png` in the terminal's current directory.
-- Image and image-folder modes wait for a key press before advancing to the next image.
-
-### Arguments
-
-| Argument | Required/default | Function |
-| --- | --- | --- |
-| `--model PATH` | Required | Segmentation checkpoint to load. |
-| `--source VALUE` | Required | Image, folder, video, USB camera, or Pi camera source. |
-| `--thresh FLOAT` | `0.5` | Minimum confidence for displaying a returned prediction. |
-| `--resolution WIDTHxHEIGHT` | Original resolution except Pi branch | Display/inference resize, such as `1280x720`; required for recording and Pi input. |
-| `--record` | Off | Record video/USB results to `demo1.avi`. |
-
-Show all arguments with:
-
-```powershell
-python .\Scripts\yolo_segment.py --help
-```
-
-## `verify_milk_placement.py`
+## Milk placement verification
 
 ### Purpose
 
@@ -532,10 +168,10 @@ not the segmentation contour. The return value is a signed integer, not the olde
 
 ### Commands
 
-From the parent project directory, with the default `Models/milk-vision-v3.pt` available:
+From the parent project directory, with the default `Models/milk-vision-v4s.pt` available:
 
 ```powershell
-python .\Scripts\verify_milk_placement.py `
+python -m Scripts.milk_vision placement `
   --video ".\Dataset\videos\milk_added.mp4"
 ```
 
@@ -546,7 +182,7 @@ Frame indices are zero-based. No debug files are created without `--debug`.
 Specify inference and evidence thresholds independently:
 
 ```powershell
-python .\Scripts\verify_milk_placement.py `
+python -m Scripts.milk_vision placement `
   --video ".\Dataset\videos\vid_11.mp4" `
   --track-conf 0.10 `
   --conf 0.40 `
@@ -556,7 +192,7 @@ python .\Scripts\verify_milk_placement.py `
 To use a different checkpoint or CPU inference:
 
 ```powershell
-python .\Scripts\verify_milk_placement.py `
+python -m Scripts.milk_vision placement `
   --video ".\Dataset\videos\vid_11.mp4" `
   --model ".\Models\milk-vision-v2.pt" `
   --device cpu
@@ -572,7 +208,7 @@ python .\Scripts\verify_milk_placement.py `
 - The checkpoint needs only a class named `milk` (case-insensitive); the inference
   class filter prevents other classes from reaching BoT-SORT.
 
-The bundled `milk_botsort.yaml` uses high/low matching thresholds of `0.25` and
+The bundled `milk_vision/milk_botsort.yaml` uses high/low matching thresholds of `0.25` and
 `0.10`, a `new_track_thresh` of `0.40`, and a 30-frame lost-track buffer. It
 disables global motion compensation because the camera is fixed and disables
 appearance re-identification because this is a milk-only crossing task.
@@ -613,7 +249,7 @@ BoT-SORT has its own separate
 ### Debugging
 
 ```powershell
-python .\Scripts\verify_milk_placement.py `
+python -m Scripts.milk_vision placement `
   --video ".\Dataset\videos\vid_11.mp4" `
   --debug `
   --debug-dir ".\Scripts\diagnostics"
@@ -640,7 +276,7 @@ with a `TRACKING ONLY` label. It also shows the gate, hysteresis boundaries, tra
 IDs, confidence, state, and emitted milk events. These are **bounding boxes, not
 segmentation masks or polygon outlines**. The video uses the input FPS and decoded
 frame dimensions, does not copy audio, and does not open a viewer window. All
-annotation and writing is implemented inside `verify_milk_placement.py`.
+annotation and writing is implemented in `milk_vision/diagnostics.py`.
 
 An empty debug row does **not** prove YOLO saw nothing: raw detections rejected
 before confirmed tracker output are not present in this CSV.
@@ -670,7 +306,7 @@ with code `2`. Neither is a successful integer result.
 | Argument | Required/default | Function |
 | --- | --- | --- |
 | `--video PATH` | Required | Input video. |
-| `--model PATH` | `Models/milk-vision-v3.pt` | Checkpoint containing a milk class. |
+| `--model PATH` | `Models/milk-vision-v4s.pt` | Checkpoint containing a milk class. |
 | `--conf FLOAT` | `0.40` | Minimum confidence for crossing observations. |
 | `--track-conf FLOAT` | `0.10` | Lower detector threshold feeding BoT-SORT. |
 | `--gate-y FLOAT` | `0.20` | Normalized gate position, from `0.05` to `0.95`. |
@@ -678,9 +314,9 @@ with code `2`. Neither is a successful integer result.
 | `--debug` | Off | Write CSV and annotated video. |
 | `--debug-dir PATH` | Beside script | Output directory for `--debug`. |
 
-Show the argument help with `python .\Scripts\verify_milk_placement.py --help`.
+Show the argument help with `python -m Scripts.milk_vision placement --help`.
 
-## `verify_milk_motion.py` (experimental, no boundary lines)
+## Milk motion estimation (experimental, no boundary lines)
 
 Estimate milk motion from per-object y-coordinate histories. This separate script
 does not change the gate-based verifier. Its output is a **motion-derived estimate**:
@@ -688,7 +324,7 @@ vertical movement cannot by itself establish that an item crossed into the fridg
 or was released onto a shelf.
 
 ```powershell
-.\.venv\Scripts\python.exe .\Scripts\verify_milk_motion.py `
+.\.venv\Scripts\python.exe -m Scripts.milk_vision motion `
   --video ".\Dataset\videos\add_milk\milk_added.mp4"
 ```
 
@@ -757,7 +393,7 @@ video's playback duration. No output files are needed to run the algorithm.
 Add `--debug` to save the diagnostic files after processing the whole video:
 
 ```powershell
-python .\Scripts\verify_milk_motion.py `
+python -m Scripts.milk_vision motion `
   --video ".\Dataset\videos\add_milk\milk_added.mp4" `
   --debug `
   --output-dir ".\debug\milk_motion"
@@ -826,20 +462,30 @@ under `debug/milk_motion/smoke`. The complete repository test suite passed 70
 tests, including 14 tests for motion regression, filtering, gaps, reversals,
 independent tracks, coordinate retention, argument validation, and artifacts.
 
-## `run_multiple_verify_milk_motion.py`
+## Folder verification commands
 
-Run the motion verifier once for each video directly inside a specified folder:
+Both folder commands share discovery, argument validation, and sequential
+subprocess execution:
 
 ```powershell
-python .\Scripts\run_multiple_verify_milk_motion.py --folder "D:\fridge videos"
+python -m Scripts.milk_vision placement --folder "D:\fridge videos"
+python -m Scripts.milk_vision motion --folder "D:\fridge videos"
 ```
 
-No CSV, JSON or PNG files are created by default. Add `--debug` to generate all
-three for each video. Additional motion-verifier arguments are forwarded to each
-run, including `--output-dir`, `--model`, `--device`, and motion thresholds:
+Use `--folder` instead of `--video`. Each runner accepts its single-video
+verifier's other options, including `--model`, `--device`, `--track-conf`, and
+`--debug`. Placement also accepts gate/confidence settings and `--debug-dir`;
+motion accepts motion thresholds, `--inward`, and `--output-dir`. Invalid options
+and thresholds are rejected before any video is started.
 
 ```powershell
-python .\Scripts\run_multiple_verify_milk_motion.py `
+python -m Scripts.milk_vision placement `
+  --folder "D:\fridge videos" `
+  --model "D:\models\milk-vision-custom.pt" `
+  --debug `
+  --debug-dir ".\debug\milk_placement"
+
+python -m Scripts.milk_vision motion `
   --folder "D:\fridge videos" `
   --debug `
   --output-dir ".\debug\milk_motion" `
@@ -847,66 +493,82 @@ python .\Scripts\run_multiple_verify_milk_motion.py `
 ```
 
 - Supported extensions are `.mp4`, `.mov`, `.avi`, `.mkv`, `.m4v`, `.webm`, and
-  `.wmv`, matched case-insensitively. Subfolders and other files are ignored.
-- Videos run sequentially in case-insensitive filename order. Each runs in a
-  separate process using the same Python interpreter and loads its own model.
-- The console shows each filename, live verifier progress, events, and the net
-  integer result. The runner prints a final failure count without an aggregate file.
-- A failed video does not stop the remaining videos. The runner exits with code
-  `1` if any failed, `0` if all succeeded, or `130` when interrupted. A missing or
-  empty video folder produces an argument error.
-- Debug files share the selected output directory. Use unique video stems:
-  `clip.mp4` and `clip.mov` would overwrite each other's debug files.
+  `.wmv`, matched case-insensitively. Subfolders and non-video files are ignored.
+- Both runners use case-insensitive natural filename order: `vid_2.mp4` precedes
+  `vid_10.mp4`. There is no video-count limit.
+- Each video runs in a fresh process using the same Python interpreter and loads
+  its own model. No tracking state is shared between videos.
+- The console shows each filename before processing, live verifier output on
+  stdout and stderr (including successful diagnostics), and a final failure count.
+  The batch console is human-readable; it is not a single integer result.
+- Video failures and process-launch errors are reported without stopping the
+  remaining videos. Cancellation stops the batch.
+- Exit codes are `0` for complete success, `1` for processing failures, `2` for
+  invalid arguments or missing/empty input folders, and `130` for cancellation.
+- Debug output is off by default. With `--debug`, duplicate filename stems are
+  rejected case-insensitively before processing: `clip.mp4` and `clip.mov` would
+  otherwise overwrite each other's artifacts. Existing artifacts from earlier
+  runs can still be overwritten. Neither runner writes an aggregate report.
+- Model defaults remain `Models/milk-vision-v4s.pt` for placement and
+  `Models/milk-vision-v4n.pt` for motion. Model loading errors are processing
+  failures, reported separately by each child verifier.
 
-Use `--folder` for the batch input. For available forwarded settings, run
-`python .\Scripts\verify_milk_motion.py --help`.
-
-## `run_multiple_verify_milk_placement.py`
-
-### Purpose
-
-This script processes a folder of videos. Unlike the single-video verifier, its
-input argument is `--folder`, not `--video`.
-
-### Command
-
-```powershell
-python .\Scripts\run_multiple_verify_milk_placement.py `
-  --folder "D:\fridge videos" `
-  --model "D:\models\milk-vision-custom.pt"
-```
-
-### Argument
-
-| Argument | Required/default | Function |
-| --- | --- | --- |
-| `--folder PATH` | Required | Existing folder containing all videos to process. |
-| `--model PATH` | `Models\milk-vision-v3.pt` | Model file used to verify every video. The path is passed to the single-video verifier. |
-
-### Processing behavior
-
-- Every supported video directly inside `--folder` is processed; there is no
-  49-video, 50-video, or other count limit.
-- Videos are processed sequentially in case-insensitive natural filename order,
-  so `vid_2.mp4` comes before `vid_10.mp4`.
-- Supported extensions are `.mp4`, `.mov`, `.avi`, `.mkv`, `.m4v`, `.webm`, and
-  `.wmv`. Non-video files and subfolders are ignored.
-- If one video fails, the script reports it and continues through every remaining
-  video. Afterward, it returns a non-zero exit status if any video failed.
-
-For each file, the wrapper launches a separate verifier process using the same
-Python interpreter. It passes one file at a time to the single-video verifier,
-whose input necessarily remains `--video`. That is an internal implementation
-detail; when running this multiple-video script, use only `--folder`. The
-When `--model` is omitted, the single-video verifier's default
-`Models\milk-vision-v3.pt` applies. Debug output is **off**, and the wrapper does
-not write an aggregate report.
-
-Show the wrapper's argument help with:
+Show the complete options for either method:
 
 ```powershell
-python .\Scripts\run_multiple_verify_milk_placement.py --help
+python -m Scripts.milk_vision placement --help
+python -m Scripts.milk_vision motion --help
 ```
+
+## Implementation layout
+
+Verification starts through the package's `__main__.py`; the four old wrapper
+scripts have been removed. No package installation is required. From the parent
+`Yolo` directory, use `python -m Scripts.milk_vision`; from inside `Scripts`, use
+`python -m milk_vision` instead. These are the same package entry point:
+
+```powershell
+# From Yolo:
+python -m Scripts.milk_vision placement --video ".\Dataset\videos\clip.mp4"
+python -m Scripts.milk_vision motion --folder ".\Dataset\videos"
+
+# Alternatively, from Yolo\Scripts:
+python -m milk_vision placement --video "..\Dataset\videos\clip.mp4"
+python -m milk_vision motion --folder "..\Dataset\videos"
+```
+
+Choose exactly one of `--video` and `--folder`. Relative paths are resolved from
+the terminal's current directory. The model and default diagnostic locations
+remain unchanged. Implementation lives in the `milk_vision` package:
+
+| Module | Responsibility |
+| --- | --- |
+| `cli.py` | Argument definitions, console summaries, and exit codes. |
+| `batch.py` | Video discovery and sequential child processes for both methods. |
+| `pipeline.py` | Coordinate inference, analysis, and optional diagnostics; return structured results. |
+| `inference.py` | Lazy model/video loading, detection extraction, and separate tracking adapters. |
+| `crossings.py` | Pure crossing state machine, thresholds, and signed counts. |
+| `motion.py` | Pure regression, trajectory segmentation, and motion-event rules. |
+| `diagnostics.py` | Streaming placement CSV/video and motion CSV/JSON/plots. |
+| `types.py` | Detection/event/result dataclasses and typed motion dictionaries. |
+| `config.py`, `errors.py` | Stable project paths, model-class validation, and expected errors. |
+| `milk_botsort.yaml` | Shared tracker configuration, moved into the package. |
+
+The CLI parses the complete command once using argparse subcommands. It passes
+the parsed settings directly to `run_placement`, `run_motion`, or `run_batch`;
+handlers do not parse arguments again. Single-video errors, cancellation, and
+signed-integer output are handled in one place in `main`.
+
+The CLI calls the pipelines; the pipelines connect video inference to the pure
+algorithms and optional diagnostic writers. Algorithms do not parse arguments,
+print results, write files, or import OpenCV/Ultralytics. Plotting and inference
+dependencies are loaded only when needed. Placement diagnostics are written one
+frame at a time rather than buffering a video in memory.
+
+Placement still uses persistent tracker identities and confirmed gate crossings.
+Motion still uses raw detections and one logical trajectory with its existing
+regression/event rules. Refactoring does not establish real-world model accuracy.
+Python callers should import definitions from their owning package modules.
 
 ## Tests
 
@@ -914,26 +576,23 @@ python .\Scripts\run_multiple_verify_milk_placement.py --help
 python -m unittest discover -s Scripts/tests -v
 ```
 
-Tests cover dataset discovery/splitting, polygon formatting, class validation,
-resume compatibility, ZIP layout, signed milk counting, confidence gating,
-weak-match liveness, evidence timeouts, debug CSV/CLI output, and a mocked
-inference pipeline. A BoT-SORT test exercises real weak-score matching on an
-existing track when the inference dependencies are installed. No test requires a
-trained model file. Dataset tests require NumPy; the real tracker test is skipped
-if its imports are unavailable. The suite does not test actual model accuracy or
-visually render/inspect debug videos.
+For syntax, lint, and type validation, check the entire package. Runtime tests
+alone do not check type annotations. With the optional development tools
+installed (`python -m pip install ruff pyright`), run from the parent project:
 
-## Optional YOLOE text encoder: `mobileclip2_b.ts`
+```powershell
+python -m compileall -q Scripts/tools Scripts/milk_vision Scripts/tests
+python -m ruff check --select F,I,B,SIM Scripts/tools Scripts/milk_vision Scripts/tests
+python -m pyright --pythonpath .venv/Scripts/python.exe Scripts
+```
 
-If a YOLOE run downloads `mobileclip2_b.ts`, it is a TorchScript text encoder,
-not TypeScript source. The installed Ultralytics MobileCLIP2 loader uses it to
-convert text prompts into embeddings; it is separate from the YOLOE `.pt` model.
-It is not a supplied repository file, and it need not already exist in the project
-root. Its location depends on asset lookup/download behavior.
-
-Removing a downloaded copy can require another download on a later text-prompted
-run. The trained closed-set milk models used by the dataset labeler and verifier
-do not need this text encoder for their normal inference workflow.
+Tests cover frame-extractor paths and command entry points, signed milk counting,
+confidence gating, weak-match liveness, evidence timeouts, debug CSV/CLI output,
+and mocked inference pipelines. A BoT-SORT test exercises real weak-score matching
+on an existing track when the inference dependencies are installed. No test
+requires a trained model file. The real tracker test is skipped if its imports
+are unavailable. The suite does not test actual model accuracy or visually
+render/inspect debug videos.
 
 ## Troubleshooting
 
@@ -947,24 +606,9 @@ python -m pip install -r .\Scripts\requirements.txt
 
 ### CUDA out-of-memory error
 
-Reduce the batch and/or image size:
+Force CPU inference for either verification method:
 
 ```powershell
-python .\Scripts\auto_label_milk_images.py `
-  --source ".\sample_img" `
-  --batch 1 `
-  --imgsz 640
+python -m Scripts.milk_vision placement --video ".\Dataset\videos\clip.mp4" --device cpu
+python -m Scripts.milk_vision motion --video ".\Dataset\videos\clip.mp4" --device cpu
 ```
-
-Alternatively force CPU inference:
-
-```powershell
-python .\Scripts\auto_label_milk_images.py `
-  --source ".\sample_img" `
-  --device cpu `
-  --batch 1
-```
-
-### Very few milk-container detections
-
-Use visually accurate prompt nouns such as `"plastic milk jug"` and `"milk bottle"`, try `--conf 0.10`, then compare a larger YOLOE checkpoint. Always inspect the preview images before using generated labels for training.
