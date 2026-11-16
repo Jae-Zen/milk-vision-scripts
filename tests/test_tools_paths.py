@@ -25,6 +25,8 @@ class ToolLocationTests(unittest.TestCase):
             for entry in (
                 [str(SCRIPTS_DIR / "tools/extract_fridge_frames.py")],
                 ["-m", "tools.extract_fridge_frames"],
+                ["-m", "tools.dataset"],
+                ["-m", "tools.evaluate"],
             ):
                 with self.subTest(entry=entry):
                     result = subprocess.run(
@@ -39,15 +41,17 @@ class ToolLocationTests(unittest.TestCase):
                     self.assertIn("usage:", result.stdout)
 
     def test_module_commands_work_from_parent_project(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "Scripts.tools.extract_fridge_frames", "--help"],
-            cwd=SCRIPTS_DIR.parent,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("usage:", result.stdout)
+        for module in ("extract_fridge_frames", "dataset", "evaluate"):
+            with self.subTest(module=module):
+                result = subprocess.run(
+                    [sys.executable, "-m", f"Scripts.tools.{module}", "--help"],
+                    cwd=SCRIPTS_DIR.parent,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("usage:", result.stdout)
 
 
 if __name__ == "__main__":

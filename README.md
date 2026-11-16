@@ -9,6 +9,17 @@ Verify milk additions and removals in fridge videos, or extract video frames.
 Motion is experimental: vertical movement alone does not prove a fridge crossing
 or shelf placement.
 
+## Labelled-video evaluation
+
+Run both algorithms against the annotated milk dataset and random-object negatives:
+
+```powershell
+python -m Scripts.tools.evaluate --include-negatives
+```
+
+See [Development and operations](docs/development.md#labelled-video-evaluation)
+for annotation rules, filtering, commands, and score interpretation.
+
 ## Project layout
 
 Clone this repository as `Scripts` inside a parent project directory:

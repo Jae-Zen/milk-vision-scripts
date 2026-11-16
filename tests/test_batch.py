@@ -1,3 +1,5 @@
+"""Regression checks for the shared folder verification runner."""
+
 from __future__ import annotations
 
 import contextlib

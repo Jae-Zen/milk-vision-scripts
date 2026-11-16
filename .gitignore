@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.ruff_cache/
 
 # Credentials and machine-local/editor files
 .env

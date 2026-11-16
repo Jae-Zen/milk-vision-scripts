@@ -38,6 +38,16 @@ remain unchanged. Implementation lives in the `milk_vision` package:
 | `config.py`, `errors.py` | Stable project paths, model-class validation, and expected errors. |
 | `milk_botsort.yaml` | Shared tracker configuration, moved into the package. |
 
+Dataset evaluation lives in the sibling `tools` package:
+
+| Module | Responsibility |
+| --- | --- |
+| `tools/dataset.py` | Load and validate annotations and video coverage. |
+| `tools/evaluate.py` | Call the milk pipelines, compare labelled outcomes, and report scores. |
+
+`tests/test_batch.py` checks the folder runner. `tests/test_video_evaluation.py`
+checks annotation loading and evaluation using temporary fixtures and mocked predictions.
+
 The CLI parses the complete command once using argparse subcommands. It passes
 the parsed settings directly to `run_placement`, `run_motion`, or `run_batch`;
 handlers do not parse arguments again. Single-video errors, cancellation, and
@@ -112,7 +122,124 @@ python -m Scripts.milk_vision placement --help
 python -m Scripts.milk_vision motion --help
 ```
 
+## Labelled-video evaluation
+
+Labelled videos live directly in `food/net -1`, `food/net 0`, or `food/net 1`
+under `Dataset/videos`. The number is the expected signed inventory change for
+that food. Entering adds one and leaving subtracts one.
+
+`dataset.py` loads `annotations.json` and validates video paths, complete
+coverage, duplicate keys, and event totals. `evaluate.py` uses those labels to
+compare placement and motion predictions with the expected outcomes.
+
+Each annotation is keyed by its video path relative to `Dataset/videos` inside
+the document's `videos` object. The document uses `schema_version: 1` and an
+`excluded` list for videos without net labels. Two long cheese recordings for
+frame extraction are excluded. An annotation record contains:
+
+```json
+{
+  "scenario": "add_and_remove_milk",
+  "description": "Milk is added and then removed.",
+  "expected_events": ["in", "out"]
+}
+```
+
+Scenario labels describe exactly what happened. Remove cheese expects `["out"]`,
+add milk expects `["in"]`, and remove/add expects `["out", "in"]`.
+Repositioning/no change and random-object milk negatives expect `[]`. Event sums
+must match the net folder. New videos need matching annotation entries, and
+renaming a video requires updating its key. Unknown sequences can use `null`,
+which excludes them from event metrics. Current clips have explicit event labels.
+
+Validate the dataset or run an evaluation from `Yolo`:
+
+```powershell
+python -m Scripts.tools.dataset
+python -m Scripts.tools.evaluate --list
+python -m Scripts.tools.evaluate --scenario add_milk --limit 1
+python -m Scripts.tools.evaluate --include-negatives
+```
+
+From inside `Yolo/Scripts`, use `python -m tools.dataset` or
+`python -m tools.evaluate` with the same options. With the project's virtual
+environment activated, `python` selects its interpreter. The terminal directory
+determines whether the module name starts with `Scripts.tools` or `tools`.
+
+The dataset command validates by default and also accepts the existing `--check`
+spelling. Evaluation performs the same validation before loading models.
+
+### Command syntax
+
+```powershell
+.\.venv\Scripts\python.exe -m Scripts.tools.evaluate --scenario add_milk --limit 1
+```
+
+| Part | Meaning |
+| --- | --- |
+| `.\` | Start the executable path from the terminal's current directory, `Yolo`. |
+| `.venv\Scripts\python.exe` | Use Python inside this project's virtual environment. |
+| `-m` | Find and execute the module named next. |
+| `Scripts.tools.evaluate` | Execute `Scripts/tools/evaluate.py`, whose main guard calls `main()`. |
+| `--scenario add_milk` | Select annotations with `"scenario": "add_milk"`. |
+| `--limit 1` | Select at most one matching video before running algorithms. |
+
+The argument parser receives `--scenario add_milk --limit 1`. Both algorithms
+run by default, so this command produces two predictions for one clip. Use
+`--method placement` or `--method motion` to choose one. The evaluator has its
+own main guard and does not execute `milk_vision/__main__.py`.
+
+### Reports and scores
+
+Evaluation is explicitly invoked and runs sequentially. The default selection is
+133 milk clips. `--include-negatives` adds 36 `others/net 0` clips, for 169 initial
+clips total. Cheese annotations are retained for future cheese algorithms.
+Both milk algorithms use `Models/milk-vision-v4s.pt` by default. `--model` changes
+the shared checkpoint. Single-video verifier defaults are independent of these
+evaluation defaults.
+
+JSON reports go under `debug/evaluation/` outside the dataset. They record model,
+manifest, and algorithm-code hashes, settings, per-video predictions/errors, and
+overall, scenario, and expected-net score breakdowns. `--output` selects a new
+report path. Existing reports are not overwritten. Other options include
+`--device`, `--conf`, `--track-conf`, `--gate-y`, and motion thresholds.
+Use `--help` for the complete list.
+
+- Net accuracy is the fraction of attempted videos with the correct final count.
+  Processing failures count against this score.
+- `mean_absolute_error_successful` averages count error over successfully
+  processed videos. Processing failures are reported separately.
+- Event-sequence accuracy requires the complete ordered sequence to match.
+  Predicting `[]` for `["in", "out"]` gets the zero net count right but the
+  event sequence wrong.
+- Event precision, recall, and F1 use ordered sequence alignment, without timestamp
+  matching. Unknown event annotations do not contribute to these metrics, and
+  empty precision/recall denominators are reported as `null`.
+
+The terminal prints each clip's result followed by a JSON score summary.
+Dataset scores alone do not establish accuracy on unseen recordings.
+
+Exit codes are `0` for all comparisons matching, `1` for mismatches or processing
+failures, `2` for invalid input, and `130` for cancellation. A partial report is
+saved after cancellation. Fast unit tests use temporary fixtures and mocked
+predictions. Run real-video evaluations explicitly using the commands above.
+
 ## Tests
+
+| File | What it checks |
+| --- | --- |
+| `tests/test_verify_milk_placement.py` | Gate crossings, jitter, confidence thresholds, tracker gaps/IDs, signed counts, detection extraction, placement diagnostics, and CLI validation. Includes a real BoT-SORT matching check when dependencies are available. |
+| `tests/test_verify_milk_motion.py` | Trajectory fitting, direction changes, pauses, gaps, outliers, confidence selection, raw detections, motion events, diagnostics, and CLI thresholds. |
+| `tests/test_batch.py` | Folder discovery, natural filename sorting, processing every video, and forwarding the selected model to child commands. |
+| `tests/test_milk_vision_package.py` | Integration between CLI, batch, pipelines, inference, and diagnostics. Covers failures, cancellation, live output, stable paths/schemas, lazy imports, and command entry points. |
+| `tests/test_tools_paths.py` | Tool defaults and module commands from the project root or another working directory. |
+| `tests/test_video_evaluation.py` | Annotation validation, food/scenario selection, net/event scoring, processing failures, cancellation, and report generation using temporary files and mocked predictions. |
+| `tests/fixtures/milk_motion_204912.json` | Recorded detector observations used by the motion regression test. This is input data loaded by a test. |
+
+Python's `unittest` runner discovers the `test_*.py` files and executes their test
+methods. Developers and coding agents run relevant tests after changing code and
+before reporting completion. Local hooks or CI can invoke the same runner when
+configured. The command below runs the complete suite from `Yolo`:
 
 ```powershell
 python -m unittest discover -s Scripts/tests -v
