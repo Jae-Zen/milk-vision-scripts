@@ -1,68 +1,47 @@
 # Development and operations
 
-[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md)
+[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md) · [Observations](observations.md) · [Jev](jev-experiment.md)
 
 Commands assume the terminal is in the parent `Yolo` directory unless stated otherwise.
 
 ## Implementation layout
 
-Verification starts through the package's `__main__.py`; the four old wrapper
-scripts have been removed. No package installation is required. From the parent
-`Yolo` directory, use `python -m Scripts.milk_vision`; from inside `Scripts`, use
-`python -m milk_vision` instead. These are the same package entry point:
+Use `python -m Scripts.milk_vision` from `Yolo`, or `python -m milk_vision`
+from inside `Scripts`. Existing `Scripts.tools.evaluate` / `tools.evaluate`
+and dataset command entry points remain available without installing the package.
 
-```powershell
-# From Yolo:
-python -m Scripts.milk_vision placement --video ".\Dataset\videos\clip.mp4"
-python -m Scripts.milk_vision motion --folder ".\Dataset\videos"
-
-# Alternatively, from Yolo\Scripts:
-python -m milk_vision placement --video "..\Dataset\videos\clip.mp4"
-python -m milk_vision motion --folder "..\Dataset\videos"
-```
-
-Choose exactly one of `--video` and `--folder`. Relative paths are resolved from
-the terminal's current directory. The model and default diagnostic locations
-remain unchanged. Implementation lives in the `milk_vision` package:
-
-| Module | Responsibility |
+| Component | Responsibility |
 | --- | --- |
-| `cli.py` | Argument definitions, console summaries, and exit codes. |
-| `batch.py` | Video discovery and sequential child processes for both methods. |
-| `pipeline.py` | Coordinate inference, analysis, and optional diagnostics; return structured results. |
-| `inference.py` | Lazy model/video loading, detection extraction, and separate tracking adapters. |
-| `crossings.py` | Pure crossing state machine, thresholds, and signed counts. |
-| `motion.py` | Pure regression, trajectory segmentation, and motion-event rules. |
-| `diagnostics.py` | Streaming placement CSV/video and motion CSV/JSON/plots. |
-| `types.py` | Detection/event/result dataclasses and typed motion dictionaries. |
-| `config.py`, `errors.py` | Stable project paths, model-class validation, and expected errors. |
-| `milk_botsort.yaml` | Shared tracker configuration, moved into the package. |
+| `observations/collector.py` | One YOLO predict and BoT-SORT update per decoded frame; preserve raw and tracked boxes and their association. |
+| `observations/storage.py` | Versioned, validated, atomic observation storage and fresh-process extraction. |
+| `observations/milk_botsort.yaml` | Canonical tracker configuration. The old root YAML remains a compatibility asset. |
+| `algorithms/placement.py` | Tracked-box gate crossing rules and replay, including empty frames. |
+| `algorithms/motion.py` | Raw-coordinate fitting and directional event rules; fresh working rows per analysis. |
+| `algorithms/jev.py` | Three-field input, frozen five-choice prompt, API call, response validation, episode counts and net calculation. |
+| `evaluation/dataset.py` | Annotation validation and dataset records. |
+| `evaluation/runner.py`, `reporting.py`, `types.py` | Method selection, resumable execution, metrics and evaluation records. |
+| `types.py` | Shared frames/detections and the common prediction contract. |
+| `pipeline.py`, `inference.py` | CLI orchestration and compatibility adapters over shared observations. |
+| `cli.py`, `batch.py` | Single-video/folder arguments, output and sequential child processes. |
+| `diagnostics.py` | Coordinate plots/exports and frame-by-frame annotated video rendering. |
+| `tools/*.py` | Compatibility commands and frame extraction; algorithm logic lives in the package. |
 
-Dataset evaluation lives in the sibling `tools` package:
+The root `crossings.py` and `motion.py` are compatibility imports for their new
+algorithm modules. `tools.dataset` and `tools.evaluate` similarly forward to the
+new evaluation modules. Existing imported entry points remain available.
 
-| Module | Responsibility |
-| --- | --- |
-| `tools/dataset.py` | Load and validate annotations and video coverage. |
-| `tools/evaluate.py` | Call the milk pipelines, compare labelled outcomes, and report scores. |
+The shared collector includes every decoded frame, even with no detections.
+Placement reads tracker-produced boxes and IDs; motion and Jev read original
+post-NMS detector boxes. Algorithms do not read videos or initialize YOLO.
+Jev alone makes remote API calls, and owns all request formatting and instructions.
+Each algorithm uses fresh working data, so motion diagnostics cannot alter Jev input.
+Jev events have no invented timestamps. Ground truth enters only evaluation.
 
-`tests/test_batch.py` checks the folder runner. `tests/test_video_evaluation.py`
-checks annotation loading and evaluation using temporary fixtures and mocked predictions.
-
-The CLI parses the complete command once using argparse subcommands. It passes
-the parsed settings directly to `run_placement`, `run_motion`, or `run_batch`;
-handlers do not parse arguments again. Single-video errors, cancellation, and
-signed-integer output are handled in one place in `main`.
-
-The CLI calls the pipelines; the pipelines connect video inference to the pure
-algorithms and optional diagnostic writers. Algorithms do not parse arguments,
-print results, write files, or import OpenCV/Ultralytics. Plotting and inference
-dependencies are loaded only when needed. Placement diagnostics are written one
-frame at a time rather than buffering a video in memory.
-
-Placement still uses persistent tracker identities and confirmed gate crossings.
-Motion still uses raw detections and one logical trajectory with its existing
-regression/event rules. Refactoring does not establish real-world model accuracy.
-Python callers should import definitions from their owning package modules.
+See [Shared observations](observations.md) for artifact contents, compatibility,
+refresh, and collection commands; [Jev](jev-experiment.md) for prompt and API details.
+Debug placement video reopens and decodes the source video for pixels only; it
+joins them to shared frame indices without rerunning the detector or tracker.
+No raw pixel arrays are retained in observation caches.
 
 ## Folder verification commands
 
@@ -130,7 +109,7 @@ that food. Entering adds one and leaving subtracts one.
 
 `dataset.py` loads `annotations.json` and validates video paths, complete
 coverage, duplicate keys, and event totals. `evaluate.py` uses those labels to
-compare placement and motion predictions with the expected outcomes.
+compare placement, motion and Jev predictions with the expected outcomes.
 
 Each annotation is keyed by its video path relative to `Dataset/videos` inside
 the document's `videos` object. The document uses `schema_version: 1` and an
@@ -169,6 +148,58 @@ determines whether the module name starts with `Scripts.tools` or `tools`.
 The dataset command validates by default and also accepts the existing `--check`
 spelling. Evaluation performs the same validation before loading models.
 
+### Three-method shared-observation comparison
+
+For the same comparison on a hosted GPU, see [Colab setup and resume](colab.md).
+
+```powershell
+.\.venv\Scripts\python.exe -m Scripts.tools.evaluate `
+  --methods placement motion jev --include-negatives --device cpu `
+  --model .\Models\milk-vision-v4s.pt `
+  --output .\debug\evaluation\comparison.json
+```
+
+The current milk scope is 133 milk clips plus 36 optional negative clips. The
+55 cheese-labelled clips are not part of milk evaluation. `--method both`
+remains the historical default (placement and motion); `--method jev` selects
+Jev alone. `--methods` accepts an explicit list and is mutually exclusive with
+`--method`. All selected methods share the explicitly selected detector and
+extraction settings; the evaluation default is v4s, while standalone motion
+retains its historical v4n default.
+
+Evaluation caches observations under `Yolo/cache/observations` by default.
+`--cache-dir` overrides it. Fresh extraction runs sequentially in a fresh process
+per video. `--refresh-observations` creates a new completed artifact version.
+Predictions are separately versioned under the cache directory's sibling
+`predictions/` directory. Identity includes observation content, algorithm code,
+settings and, for Jev, its exact request and model. `--rerun` forces new prediction
+versions without discarding previous results. Repeating with a new `--output`
+resumes compatible predictions; output reports cannot overwrite earlier reports.
+Labels are rescored from the current annotations rather than stored in prediction
+caches. Changing a checkpoint, extraction settings, prompt or algorithm naturally
+invalidates the corresponding reuse. Cache hits can be replayed without inference;
+Jev authentication is needed only when an actual uncached request is sent.
+
+Reports are atomically updated after every completed method result, including
+failures. Ctrl+C saves a partial report; a hard interruption leaves the most recent
+completed report and caches. Reports include algorithm-only and collection/load
+seconds, detection counts, cache hits, observation paths/hashes, and Jev confidence,
+probabilities, request/response, actual model and token usage. Collection timing is
+shared evidence metadata repeated per method; do not sum it across methods.
+
+Per-class/scenario metrics include an explicit split between empty and nonempty
+detection inputs. The accuracy denominator includes failed selected comparisons;
+failures are not silently dropped. Event scores compare inventory-event annotations,
+not independently labelled visible-motion intervals. `none` on empty evidence can
+be correct for observed motion while still missing an inventory event. Zero-net
+agreement alone does not establish correct episode grouping.
+
+`--jev-model` defaults to `jev-1.14.0`, and `--api-timeout` defaults to 45 seconds.
+There are no automatic API retries, long-context activation, truncation, smoothing
+or temporal subsampling of Jev inputs. Context-limit, timeout, network or malformed
+response errors are reported as failures. An explicit retry may still be billable
+if the previous timed-out request reached TypeSafe.
+
 ### Command syntax
 
 ```powershell
@@ -180,13 +211,13 @@ spelling. Evaluation performs the same validation before loading models.
 | `.\` | Start the executable path from the terminal's current directory, `Yolo`. |
 | `.venv\Scripts\python.exe` | Use Python inside this project's virtual environment. |
 | `-m` | Find and execute the module named next. |
-| `Scripts.tools.evaluate` | Execute `Scripts/tools/evaluate.py`, whose main guard calls `main()`. |
+| `Scripts.tools.evaluate` | Execute the compatibility entry point, which calls `milk_vision.evaluation.runner.main()`. |
 | `--scenario add_milk` | Select annotations with `"scenario": "add_milk"`. |
 | `--limit 1` | Select at most one matching video before running algorithms. |
 
-The argument parser receives `--scenario add_milk --limit 1`. Both algorithms
+The argument parser receives `--scenario add_milk --limit 1`. Placement and motion
 run by default, so this command produces two predictions for one clip. Use
-`--method placement` or `--method motion` to choose one. The evaluator has its
+`--method placement`, `--method motion`, or `--method jev` to choose one. The evaluator has its
 own main guard and does not execute `milk_vision/__main__.py`.
 
 ### Reports and scores
@@ -194,7 +225,7 @@ own main guard and does not execute `milk_vision/__main__.py`.
 Evaluation is explicitly invoked and runs sequentially. The default selection is
 133 milk clips. `--include-negatives` adds 36 `others/net 0` clips, for 169 initial
 clips total. Cheese annotations are retained for future cheese algorithms.
-Both milk algorithms use `Models/milk-vision-v4s.pt` by default. `--model` changes
+All selected methods use `Models/milk-vision-v4s.pt` by default. `--model` changes
 the shared checkpoint. Single-video verifier defaults are independent of these
 evaluation defaults.
 
@@ -234,6 +265,9 @@ predictions. Run real-video evaluations explicitly using the commands above.
 | `tests/test_milk_vision_package.py` | Integration between CLI, batch, pipelines, inference, and diagnostics. Covers failures, cancellation, live output, stable paths/schemas, lazy imports, and command entry points. |
 | `tests/test_tools_paths.py` | Tool defaults and module commands from the project root or another working directory. |
 | `tests/test_video_evaluation.py` | Annotation validation, food/scenario selection, net/event scoring, processing failures, cancellation, and report generation using temporary files and mocked predictions. |
+| `tests/test_shared_observations.py` | Cache integrity/invalidation, empty frames, independent algorithm inputs, shared collection, prediction resume, method selection. |
+| `tests/test_jev_experiment.py` | Three-field isolation, five episode choices, Python net calculation, transport and saved-result validation. |
+| `tests/test_colab_workflow.py` | Notebook helpers: all algorithm combinations, run modes, filters, source compatibility, edited-worktree protection and experiment history; no inference or API calls. |
 | `tests/fixtures/milk_motion_204912.json` | Recorded detector observations used by the motion regression test. This is input data loaded by a test. |
 
 Python's `unittest` runner discovers the `test_*.py` files and executes their test

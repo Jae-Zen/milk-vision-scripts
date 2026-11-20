@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from .config import SCRIPTS_DIR
 from .crossings import GATE_HYSTERESIS
@@ -101,7 +101,7 @@ class PlacementDiagnostics:
         self.handle = None
         self.video_writer = None
 
-    def __enter__(self) -> PlacementDiagnostics:
+    def __enter__(self) -> Self:
         try:
             self.csv_path.parent.mkdir(parents=True, exist_ok=True)
             self.handle = self.csv_path.open("w", encoding="utf-8", newline="")
@@ -136,7 +136,7 @@ class PlacementDiagnostics:
                 observations,
             )
         )
-        if item.frame_index % max(1, int(round(self.fps))) == 0:
+        if item.frame_index % max(1, round(self.fps)) == 0:
             self.handle.flush()
         if self.video_writer is None:
             self.video_writer = cv2.VideoWriter(
@@ -244,7 +244,7 @@ def _draw_debug_frame(
         (gate_y + GATE_HYSTERESIS, (255, 180, 0), "inner limit"),
     )
     for normalized_y, color, label in gate_lines:
-        y = int(round(normalized_y * frame_height))
+        y = round(normalized_y * frame_height)
         cv2.line(annotated, (0, y), (frame_width - 1, y), color, 2)
         cv2.putText(
             annotated,
@@ -263,10 +263,10 @@ def _draw_debug_frame(
         observation = observations[key]
         color = (70, 220, 70) if observation.crossing_eligible else (0, 180, 255)
         x1, y1, x2, y2 = (
-            int(round(detection.box.x1)),
-            int(round(detection.box.y1)),
-            int(round(detection.box.x2)),
-            int(round(detection.box.y2)),
+            round(detection.box.x1),
+            round(detection.box.y1),
+            round(detection.box.x2),
+            round(detection.box.y2),
         )
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
 

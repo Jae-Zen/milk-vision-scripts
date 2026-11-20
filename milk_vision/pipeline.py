@@ -12,16 +12,14 @@ from .crossings import (
     CROSSING_CONFIDENCE,
     CROSSING_CONFIRM_SECONDS,
     EVIDENCE_GAP_SECONDS,
-    GATE_HYSTERESIS,
     TRACK_GAP_SECONDS,
     TRACKING_CONFIDENCE,
-    CrossingDetector,
     _seconds_to_frames,
     calculate_net_delta,
 )
 from .errors import VerificationError
 from .motion import MotionConfig, analyze_detections
-from .types import MotionResult, PlacementResult
+from .types import CrossingEvent, MotionResult, PlacementResult
 
 
 def verify_placement_video(
@@ -33,6 +31,7 @@ def verify_placement_video(
     debug: bool = False,
     tracking_confidence: float = TRACKING_CONFIDENCE,
     debug_dir: Path | None = None,
+    cache_dir: Path | None = None,
 ) -> PlacementResult:
     """Return crossings and run details without printing a console summary."""
     video_path = video_path.expanduser().resolve()
@@ -53,19 +52,13 @@ def verify_placement_video(
                 model_path,
                 tracking_confidence,
                 device,
+                load_frames=debug,
+                cache_dir=cache_dir,
             )
         )
         confirm = _seconds_to_frames(CROSSING_CONFIRM_SECONDS, video.fps, minimum=2)
         gap = _seconds_to_frames(TRACK_GAP_SECONDS, video.fps)
         evidence_gap = _seconds_to_frames(EVIDENCE_GAP_SECONDS, video.fps)
-        detector = CrossingDetector(
-            gate_y,
-            GATE_HYSTERESIS,
-            confirm,
-            gap,
-            confidence,
-            evidence_gap,
-        )
         writer = None
         if debug:
             writer = stack.enter_context(
@@ -73,17 +66,23 @@ def verify_placement_video(
                     video_path, debug_dir, video.fps, gate_y
                 )
             )
-        events = []
-        for item in video:
-            observations = {}
-            for detection in item.detections:
-                observation = detector.observe_detailed(detection, item.height)
-                observations[(detection.class_name, detection.track_id)] = observation
-                if observation.event is not None:
-                    events.append(observation.event)
+        from .algorithms.placement import analyze
+
+        frames = iter(video)
+
+        def render(frame, details):
             if writer is not None:
-                writer.write_frame(item, observations)
-            detector.expire(item.frame_index)
+                item = next(frames)
+                if item.frame_index != frame.frame_index:
+                    raise VerificationError(
+                        "Diagnostic frame does not match observations"
+                    )
+                writer.write_frame(item, details)
+
+        prediction = analyze(
+            video.observations, confidence, gate_y, on_frame=render if debug else None
+        )
+        events = [CrossingEvent(**event) for event in prediction.details["events"]]
 
     return PlacementResult(
         net_delta=calculate_net_delta(events),
@@ -112,6 +111,7 @@ def verify_motion_video(
     output_dir: Path | None = None,
     *,
     status: Callable[[str], None] = lambda message: None,
+    cache_dir: Path | None = None,
 ) -> MotionResult:
     """Collect raw positions, analyze the trajectory, and optionally save it."""
     video_path = video_path.expanduser().resolve()
@@ -122,6 +122,7 @@ def verify_motion_video(
         tracking_confidence,
         device,
         status=status,
+        **({"cache_dir": cache_dir} if cache_dir is not None else {}),
     )
     metadata["tracking_confidence"] = tracking_confidence
     status("Fitting milk trajectories and finding motion events...")

@@ -1,6 +1,6 @@
 # Milk motion estimation
 
-[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md)
+[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md) · [Observations](observations.md) · [Jev](jev-experiment.md)
 
 Commands assume the terminal is in the parent `Yolo` directory unless stated otherwise.
 
@@ -11,7 +11,7 @@ or was released onto a shelf.
 
 ```powershell
 .\.venv\Scripts\python.exe -m Scripts.milk_vision motion `
-  --video ".\Dataset\videos\add_milk\milk_added.mp4"
+  --video ".\Dataset\videos\milk\net 1\milk_added.mp4"
 ```
 
 The default checkpoint is `Models/milk-vision-v4n.pt`. Override it with `--model`;
@@ -80,7 +80,7 @@ Add `--debug` to save the diagnostic files after processing the whole video:
 
 ```powershell
 python -m Scripts.milk_vision motion `
-  --video ".\Dataset\videos\add_milk\milk_added.mp4" `
+  --video ".\Dataset\videos\milk\net 1\milk_added.mp4" `
   --debug `
   --output-dir ".\debug\milk_motion"
 ```
@@ -147,3 +147,12 @@ python -m Scripts.milk_vision motion --help
 
 For multiple videos, replace `--video` with `--folder` and see
 [folder execution](development.md#folder-verification-commands).
+
+## Shared observations
+
+Motion uses the raw-detection projection of the shared collector, while placement
+uses its tracked boxes. The algorithm receives fresh rows so fitted values and
+candidate diagnostics never modify shared evidence. `--cache-dir .\cache\observations`
+enables reuse for standalone commands; uncached ordinary runs retain their existing
+file behavior. See [Shared observations](observations.md) and the
+[three-method evaluator](development.md#three-method-shared-observation-comparison).

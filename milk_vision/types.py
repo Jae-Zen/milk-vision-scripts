@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -161,3 +161,57 @@ class MotionResult:
     events: list[MotionEvent]
     metadata: VideoMetadata
     net_delta: int
+
+
+@dataclass(frozen=True)
+class RawDetection:
+    box: BoundingBox
+    confidence: float
+    detection_index: int
+    track_id: int | None = None
+
+
+@dataclass(frozen=True)
+class FrameObservations:
+    frame_index: int
+    timestamp_seconds: float
+    width: int
+    height: int
+    raw: tuple[RawDetection, ...]
+    tracked: tuple[TrackedDetection, ...]
+
+
+@dataclass(frozen=True)
+class VideoObservations:
+    metadata: VideoMetadata
+    frames: tuple[FrameObservations, ...]
+
+    def motion_rows(self) -> list[MotionRow]:
+        """Return fresh raw rows; analysis may safely add its own diagnostics."""
+        return [
+            MotionRow(
+                frame_index=f.frame_index,
+                timestamp_seconds=f.timestamp_seconds,
+                frame_width=f.width,
+                frame_height=f.height,
+                detection_index=d.detection_index,
+                track_id=d.track_id,
+                confidence=d.confidence,
+                x1=d.box.x1,
+                y1=d.box.y1,
+                x2=d.box.x2,
+                y2=d.box.y2,
+                center_x=d.box.center_x,
+                center_y=d.box.center_y,
+                center_y_normalized=d.box.center_y / f.height,
+            )
+            for f in self.frames
+            for d in f.raw
+        ]
+
+
+@dataclass(frozen=True)
+class Prediction:
+    net: int
+    events: tuple[str, ...]
+    details: dict[str, Any] = field(default_factory=dict)

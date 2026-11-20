@@ -1,6 +1,6 @@
 # Frame extraction
 
-[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md)
+[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md) · [Observations](observations.md) · [Jev](jev-experiment.md)
 
 Commands assume the terminal is in the parent `Yolo` directory unless stated otherwise.
 

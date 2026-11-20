@@ -269,6 +269,12 @@ class FakeBoxes:
         )
         self.count = len(detections)
 
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self
+
     def __len__(self):
         return self.count
 
@@ -357,19 +363,52 @@ class VerifyVideoIntegrationTests(unittest.TestCase):
             capture = mock.Mock()
             capture.isOpened.return_value = True
             capture.get.return_value = fps
-            capture.read.side_effect = [(True, frame) for _ in rows] + [(False, None)]
+            capture.read.side_effect = (
+                [(True, frame) for _ in rows] + [(False, None)]
+            ) * 2
             cv2 = mock.Mock()
             cv2.VideoCapture.return_value = capture
             cv2.VideoWriter.return_value.isOpened.return_value = True
             model = mock.Mock()
             model.names = {4: "milk"} if names is None else names
-            model.track.side_effect = [
+            model.predict.side_effect = [
                 [SimpleNamespace(boxes=FakeBoxes(ds))] for ds in rows
+            ]
+            tracker = mock.Mock()
+            tracker.update.side_effect = [
+                [
+                    [
+                        d.box.x1,
+                        d.box.y1,
+                        d.box.x2,
+                        d.box.y2,
+                        d.track_id,
+                        d.confidence,
+                        4,
+                        i,
+                    ]
+                    for i, d in enumerate(ds)
+                ]
+                for ds in rows
             ]
             yolo = mock.Mock(return_value=model)
             with (
                 mock.patch.dict(
-                    sys.modules, {"cv2": cv2, "ultralytics": SimpleNamespace(YOLO=yolo)}
+                    sys.modules,
+                    {
+                        "cv2": cv2,
+                        "ultralytics": SimpleNamespace(YOLO=yolo),
+                        "ultralytics.engine.results": SimpleNamespace(
+                            Results=SimpleNamespace
+                        ),
+                        "ultralytics.trackers.bot_sort": SimpleNamespace(
+                            BOTSORT=mock.Mock(return_value=tracker)
+                        ),
+                        "ultralytics.utils": SimpleNamespace(
+                            YAML=SimpleNamespace(load=lambda _: {}),
+                            IterableSimpleNamespace=SimpleNamespace,
+                        ),
+                    },
                 ),
                 mock.patch.object(diagnostics, "_draw_debug_frame", return_value=frame),
                 contextlib.redirect_stderr(
@@ -406,11 +445,10 @@ class VerifyVideoIntegrationTests(unittest.TestCase):
         ]
         net, model, debug_rows = self.run_video(rows, debug=True)
         self.assertEqual(1, net)
-        for call in model.track.call_args_list:
+        for call in model.predict.call_args_list:
             self.assertEqual(0.1, call.kwargs["conf"])
             self.assertEqual([4], call.kwargs["classes"])
-            self.assertEqual(str(config.TRACKER_CONFIG), call.kwargs["tracker"])
-            self.assertTrue(call.kwargs["persist"])
+            self.assertFalse(call.kwargs["stream"])
         for row in debug_rows[3:6]:
             self.assertEqual("False", row["crossing_eligible"])
             self.assertEqual("tracking_only", row["observation_use"])

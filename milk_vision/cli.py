@@ -7,8 +7,9 @@ import contextlib
 import json
 import math
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence, TextIO
+from typing import TextIO
 
 from .batch import find_videos, run_batch
 from .config import MOTION_MODEL, PLACEMENT_MODEL, PROJECT_ROOT, TRACKER_CONFIG
@@ -134,6 +135,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             default=model,
             help=f"YOLO checkpoint (default: {model})",
         )
+        command.add_argument("--cache-dir", type=Path, help="Reuse shared observations")
         command.add_argument("--device", help="Ultralytics device, such as cpu or 0")
         command.add_argument(
             "--debug", action="store_true", help="Save diagnostic files"
@@ -228,6 +230,7 @@ def run_placement(args: argparse.Namespace) -> int:
         debug=args.debug,
         tracking_confidence=args.track_conf,
         debug_dir=args.debug_dir,
+        **({"cache_dir": args.cache_dir} if args.cache_dir is not None else {}),
     )
     print_placement_result(result)
     return result.net_delta
@@ -247,6 +250,7 @@ def run_motion(args: argparse.Namespace) -> int:
         args.debug,
         args.output_dir,
         status=status,
+        **({"cache_dir": args.cache_dir} if args.cache_dir is not None else {}),
     )
     print_motion_summary(result.rows, result.events, result.net_delta)
     return result.net_delta

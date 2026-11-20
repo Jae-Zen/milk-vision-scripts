@@ -1,0 +1,19 @@
+# Milk-only BoT-SORT configuration. YOLO supplies boxes above --track-conf (0.10).
+# Weak boxes can support existing tracks, but cannot start one below 0.40.
+# The verifier separately applies --conf (0.40) to all crossing observations.
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.10
+new_track_thresh: 0.40
+track_buffer: 30
+match_thresh: 0.82
+fuse_score: False
+
+# The camera is fixed, and appearance re-identification is unnecessary for this
+# milk-only crossing task. BoT-SORT still uses its independent width/height
+# motion model, which is robust to the milk rotating at the gate.
+gmc_method: none
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

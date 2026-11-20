@@ -61,7 +61,8 @@ class BatchTests(unittest.TestCase):
                     command = call.args[0]
                     self.assertEqual(sys.executable, command[0])
                     self.assertEqual(["-m", "milk_vision", method], command[1:4])
-                    self.assertEqual({"env"}, set(call.kwargs))
+                    self.assertEqual({"env", "check"}, set(call.kwargs))
+                    self.assertFalse(call.kwargs["check"])
                     self.assertEqual(
                         str(SCRIPTS_DIR),
                         call.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0],
@@ -307,7 +308,7 @@ class PackageBoundaryTests(unittest.TestCase):
             diagnostics._debug_artifact_paths(Path("clip.mp4")),
         )
         self.assertTrue(config.TRACKER_CONFIG.is_file())
-        self.assertEqual("milk_vision", config.TRACKER_CONFIG.parent.name)
+        self.assertEqual("observations", config.TRACKER_CONFIG.parent.name)
 
     def test_analysis_imports_without_site_packages(self):
         source = f"import sys; sys.path.insert(0, {str(SCRIPTS_DIR)!r}); from milk_vision import crossings, motion"
@@ -515,7 +516,7 @@ class MotionInferenceTests(unittest.TestCase):
         capture = mock.Mock()
         capture.isOpened.return_value = True
         capture.get.return_value = 30
-        frames = [object() for _ in predictions]
+        frames = [SimpleNamespace(shape=(100, 100, 3)) for _ in predictions]
         capture.read.side_effect = [(True, frame) for frame in frames] + [(False, None)]
         cv2 = mock.Mock()
         cv2.VideoCapture.return_value = capture
@@ -523,6 +524,7 @@ class MotionInferenceTests(unittest.TestCase):
         model.names = {0: "milk"}
         model.predict.side_effect = predictions
         tracker = mock.Mock()
+        tracker.update.return_value = []
         modules = {
             "cv2": cv2,
             "ultralytics": SimpleNamespace(YOLO=mock.Mock(return_value=model)),
@@ -553,12 +555,25 @@ class MotionInferenceTests(unittest.TestCase):
         return result, model, tracker, extract, frames
 
     def test_updates_tracker_for_every_frame_including_empty_detections(self):
-        empty, detected = mock.Mock(), mock.Mock()
+        class EmptyBoxes:
+            xyxy = SimpleNamespace(tolist=list)
+            conf = SimpleNamespace(tolist=list)
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return self
+
+            def __len__(self):
+                return 0
+
+        empty, detected = EmptyBoxes(), EmptyBoxes()
         predictions = [
             [SimpleNamespace(boxes=empty)],
             [SimpleNamespace(boxes=detected)],
         ]
-        (rows, metadata), model, tracker, extract, frames = self.run_inference(
+        (rows, metadata), model, tracker, _extract, frames = self.run_inference(
             predictions
         )
         self.assertEqual([], rows)
@@ -571,7 +586,9 @@ class MotionInferenceTests(unittest.TestCase):
         self.assertEqual(
             (detected.cpu().numpy(), frames[1]), tracker.update.call_args_list[1].args
         )
-        self.assertEqual([0, 1], [call.args[2] for call in extract.call_args_list])
+        self.assertEqual(
+            frames, [call.args[0] for call in model.predict.call_args_list]
+        )
         for call in model.predict.call_args_list:
             self.assertEqual(0.1, call.kwargs["conf"])
             self.assertEqual([0], call.kwargs["classes"])

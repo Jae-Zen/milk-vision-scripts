@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import math
-import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .config import TRACKER_CONFIG, resolve_milk_class_id
 from .errors import VerificationError
 from .types import (
     BoundingBox,
@@ -20,7 +17,7 @@ from .types import (
 
 
 class PlacementVideo:
-    """Own a capture and persistent tracker for exactly one placement video."""
+    """Compatibility adapter over the shared observations; pixels are debug-only."""
 
     def __init__(
         self,
@@ -28,96 +25,51 @@ class PlacementVideo:
         model_path: Path,
         tracking_confidence: float,
         device: str | None,
+        *,
+        load_frames: bool = True,
+        cache_dir: Path | None = None,
     ) -> None:
-        self.video_path = video_path
-        self.model_path = model_path
-        self.tracking_confidence = tracking_confidence
-        self.device = device
+        self.video_path, self.model_path = video_path, model_path
+        self.tracking_confidence, self.device = tracking_confidence, device
+        self.load_frames, self.cache_dir = load_frames, cache_dir
         self.capture = None
 
-    def __enter__(self) -> PlacementVideo:
-        for path, label in (
-            (self.video_path, "Video file"),
-            (self.model_path, "Model file"),
-            (TRACKER_CONFIG, "BoT-SORT configuration"),
-        ):
-            if not path.is_file():
-                raise VerificationError(f"{label} does not exist: {path}")
-        try:
+    def __enter__(self):
+        from .observations.storage import get_observations
+
+        self.observations, self.collection_details = get_observations(
+            self.video_path,
+            self.model_path,
+            self.tracking_confidence,
+            self.device,
+            self.cache_dir,
+        )
+        self.fps = float(self.observations.metadata.get("fps", 0))
+        if self.load_frames:
             import cv2
-            from ultralytics import YOLO
-        except ImportError as exc:
-            raise VerificationError(
-                "OpenCV and Ultralytics are required. Install Scripts/requirements.txt."
-            ) from exc
-        self.capture = cv2.VideoCapture(str(self.video_path))
-        try:
+
+            self.capture = cv2.VideoCapture(str(self.video_path))
             if not self.capture.isOpened():
+                self.capture.release()
                 raise VerificationError(
-                    f"OpenCV could not open the video: {self.video_path}"
+                    f"Could not reopen video for diagnostics: {self.video_path}"
                 )
-            self.fps = float(self.capture.get(cv2.CAP_PROP_FPS))
-            if not math.isfinite(self.fps) or self.fps <= 0:
-                raise VerificationError("The video has invalid FPS metadata.")
-            try:
-                self.model = YOLO(str(self.model_path), task="segment")
-                self.milk_class_id = resolve_milk_class_id(self.model.names)
-            except VerificationError:
-                raise
-            except Exception as exc:
-                raise VerificationError(
-                    f"Could not load the YOLO model: {exc}"
-                ) from exc
-            self.track_arguments = {
-                "persist": True,
-                "tracker": str(TRACKER_CONFIG),
-                "conf": self.tracking_confidence,
-                "classes": [self.milk_class_id],
-                "verbose": False,
-            }
-            if self.device is not None:
-                self.track_arguments["device"] = self.device
-            return self
-        except BaseException:
-            self.capture.release()
-            raise
+        return self
 
-    def __iter__(self) -> Iterator[PlacementFrame]:
-        if self.capture is None:
-            raise VerificationError(
-                "Open PlacementVideo with a with block before reading frames."
-            )
-        frame_index = -1
-        while True:
-            ok, frame = self.capture.read()
-            # OpenCV cannot distinguish normal EOF from a decode failure here.
-            if not ok:
-                break
-            frame_index += 1
-            height, width = frame.shape[:2]
-            if height <= 0 or width <= 0:
-                raise VerificationError(
-                    f"Decoded frame {frame_index} has invalid dimensions."
-                )
-            try:
-                result = self.model.track(frame, **self.track_arguments)[0]
-            except Exception as exc:
-                raise VerificationError(
-                    f"YOLO tracking failed at frame {frame_index}: {exc}"
-                ) from exc
+    def __iter__(self):
+        for item in self.observations.frames:
+            image = None
+            if self.capture is not None:
+                ok, image = self.capture.read()
+                if not ok:
+                    raise VerificationError(
+                        "Debug video ended before the observation frames"
+                    )
             yield PlacementFrame(
-                frame,
-                frame_index,
-                height,
-                width,
-                _extract_tracked_detections(result, frame_index, self.milk_class_id),
-            )
-        if frame_index < 0:
-            raise VerificationError(
-                f"No frames could be decoded from the video: {self.video_path}"
+                image, item.frame_index, item.height, item.width, list(item.tracked)
             )
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(self, exc_type, exc_value, traceback):
         if self.capture is not None:
             self.capture.release()
 
@@ -207,96 +159,19 @@ def collect_detections(
     tracking_confidence: float,
     device: str | None,
     status: Callable[[str], None] = lambda message: None,
+    *,
+    cache_dir: Path | None = None,
 ) -> tuple[list[MotionRow], VideoMetadata]:
-    for path in (video_path, model_path, TRACKER_CONFIG):
-        if not path.is_file():
-            raise VerificationError(f"File does not exist: {path}")
-    try:
-        import cv2
-        from ultralytics import YOLO
-        from ultralytics.engine.results import Results
-        from ultralytics.trackers.bot_sort import BOTSORT
-        from ultralytics.utils import YAML, IterableSimpleNamespace
-    except ImportError as exc:
-        raise VerificationError(
-            "Install Scripts/requirements.txt to run video inference."
-        ) from exc
-    capture = cv2.VideoCapture(str(video_path))
-    try:
-        if not capture.isOpened():
-            raise VerificationError(f"Could not open video: {video_path}")
-        fps = float(capture.get(cv2.CAP_PROP_FPS))
-        if not math.isfinite(fps) or fps <= 0:
-            raise VerificationError("Video FPS must be finite and positive")
-        reported_frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        total_frames = (
-            int(reported_frames)
-            if math.isfinite(reported_frames) and reported_frames > 0
-            else 0
+    """Compatibility projection of the single shared collector."""
+    from .observations.collector import collect_video
+    from .observations.storage import get_observations
+
+    if cache_dir is None:
+        observations = collect_video(
+            video_path, model_path, tracking_confidence, device, status
         )
-        status(f"Loading model: {model_path}")
-        model = YOLO(str(model_path))
-        milk_id = resolve_milk_class_id(model.names)
-        tracker = BOTSORT(
-            args=IterableSimpleNamespace(**YAML.load(str(TRACKER_CONFIG)))
+    else:
+        observations, _ = get_observations(
+            video_path, model_path, tracking_confidence, device, cache_dir
         )
-        arguments = {
-            "conf": tracking_confidence,
-            "classes": [milk_id],
-            "verbose": False,
-        }
-        if device is not None:
-            arguments["device"] = device
-        rows: list[MotionRow] = []
-        frame_count = 0
-        started = last_progress = time.monotonic()
-        status(
-            f"Processing video ({fps:.2f} FPS). First-frame setup may take a moment..."
-        )
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            predictions = model.predict(frame, stream=False, **arguments)
-            if not isinstance(predictions, list) or not predictions:
-                raise VerificationError(
-                    "Expected a non-empty list of prediction results"
-                )
-            result = predictions[0]
-            if not isinstance(result, Results) or result.boxes is None:
-                raise VerificationError("The model must return object detection boxes")
-            # Explicit tracker update preserves all raw detections and advances
-            # its clock even on empty frames. model.track() can filter boxes.
-            tracks = tracker.update(result.boxes.cpu().numpy(), frame)
-            rows.extend(detection_rows(result, tracks, frame_count, fps))
-            frame_count += 1
-            now = time.monotonic()
-            if frame_count == 1 or now - last_progress >= 2.0:
-                elapsed = now - started
-                progress = (
-                    f"{frame_count}/{total_frames} frames ({min(100.0, 100 * frame_count / total_frames):.1f}%)"
-                    if total_frames
-                    else f"{frame_count} frames"
-                )
-                status(
-                    f"Processed {progress} | milk detections: {len(rows)} | elapsed: {elapsed:.1f}s"
-                )
-                last_progress = now
-        if not frame_count:
-            raise VerificationError("Video yielded no decoded frames")
-        status(
-            f"Video processing finished: {frame_count} frames, {len(rows)} milk detections."
-        )
-        return rows, {
-            "video": str(video_path),
-            "model": str(model_path),
-            "fps": fps,
-            "frame_count": frame_count,
-            "duration_seconds": frame_count / fps,
-        }
-    except VerificationError:
-        raise
-    except Exception as exc:
-        raise VerificationError(f"Video inference failed: {exc}") from exc
-    finally:
-        capture.release()
+    return observations.motion_rows(), observations.metadata.copy()

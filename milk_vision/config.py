@@ -9,7 +9,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = SCRIPTS_DIR.parent
 PLACEMENT_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v4s.pt"
 MOTION_MODEL = PROJECT_ROOT / "Models" / "milk-vision-v4n.pt"
-TRACKER_CONFIG = Path(__file__).with_name("milk_botsort.yaml")
+TRACKER_CONFIG = Path(__file__).parent / "observations" / "milk_botsort.yaml"
 
 
 def resolve_milk_class_id(names: Mapping[int, str]) -> int:

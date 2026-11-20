@@ -1,6 +1,6 @@
 # Milk placement verification
 
-[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md)
+[Quick start](../README.md) · [Placement](placement.md) · [Motion](motion.md) · [Frame extraction](frame-extraction.md) · [Development](development.md) · [Observations](observations.md) · [Jev](jev-experiment.md)
 
 Commands assume the terminal is in the parent `Yolo` directory unless stated otherwise.
 
@@ -31,7 +31,7 @@ From the parent project directory, with the default `Models/milk-vision-v4s.pt` 
 
 ```powershell
 python -m Scripts.milk_vision placement `
-  --video ".\Dataset\videos\milk_added.mp4"
+  --video ".\Dataset\videos\milk\net 1\milk_added.mp4"
 ```
 
 Successful stdout is exactly one integer line. Every successful run also lists
@@ -67,7 +67,7 @@ python -m Scripts.milk_vision placement `
 - The checkpoint needs only a class named `milk` (case-insensitive); the inference
   class filter prevents other classes from reaching BoT-SORT.
 
-The bundled `milk_vision/milk_botsort.yaml` uses high/low matching thresholds of `0.25` and
+The bundled `milk_vision/observations/milk_botsort.yaml` uses high/low matching thresholds of `0.25` and
 `0.10`, a `new_track_thresh` of `0.40`, and a 30-frame lost-track buffer. It
 disables global motion compensation because the camera is fixed and disables
 appearance re-identification because this is a milk-only crossing task.
@@ -170,3 +170,13 @@ python -m Scripts.milk_vision placement --help
 
 For multiple videos, replace `--video` with `--folder` and see
 [folder execution](development.md#folder-verification-commands).
+
+## Shared observations
+
+Placement now consumes tracked boxes from the same collector used by motion and
+Jev. Empty frames are retained for expiry, and original raw boxes are saved
+separately for the other algorithms. Crossing thresholds and confidence gating
+remain unchanged. Add `--cache-dir .\cache\observations` to reuse observations
+for a single-video/folder command; without it ordinary runs do not create caches.
+Debug video rendering reopens source frames and never reruns YOLO for the overlay.
+See [Shared observations](observations.md) and [evaluation](development.md#three-method-shared-observation-comparison).

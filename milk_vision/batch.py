@@ -93,6 +93,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     "--video",
                     str(video),
                 ],
+                check=False,
                 env=environment,
             )
         except OSError as exc:

@@ -1,3 +1,6 @@
 ultralytics>=8.4.121,<9
 # Optional assignment solver used by Ultralytics trackers.
 lap>=0.5.12,<1
+
+# Jev credentials from environment or the local .env file.
+python-dotenv>=1,<2
