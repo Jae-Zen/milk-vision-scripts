@@ -54,8 +54,11 @@ frame dimensions, identities or empty-frame records under the frozen prompt.
 The default cache is `Yolo/cache/observations`. Override it with `--cache-dir`.
 Identity includes video/checkpoint content hashes, tracker YAML, detector cutoff,
 device selection, collector source/schema version, relevant installed dependency
-versions and CPU thread environment settings. Compatible artifacts are validated
-before loading. A changed identity gets a distinct directory. Corrupt or incomplete
+versions and CPU thread environment settings. The collector applies Ultralytics'
+default `OMP_NUM_THREADS=1` before fingerprinting when that variable is unset or
+empty; explicit values are preserved. Workers capture the identity before
+collection, matching the parent. Compatible artifacts are validated before
+loading. A changed identity gets a distinct directory. Corrupt or incomplete
 artifacts raise errors; they are not silently treated as zero detections.
 
 `--refresh-observations` creates a new version even when identity matches. Earlier

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -177,6 +179,69 @@ class SharedObservationsTests(unittest.TestCase):
             self.assertNotEqual(first, storage.identity(video, model, 0.2, "cpu"))
             model.write_bytes(b"new model")
             self.assertNotEqual(first, storage.identity(video, model, 0.1, "cpu"))
+
+    def test_thread_defaults_are_stable_and_explicit_settings_are_preserved(self):
+        video, model = self.root / "v", self.root / "m"
+        video.write_bytes(b"video")
+        model.write_bytes(b"model")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("OMP_NUM_THREADS", None)
+            first = storage.identity(video, model, 0.1, "cpu")
+            self.assertEqual("1", first["threads"]["OMP_NUM_THREADS"])
+            self.assertEqual(first, storage.identity(video, model, 0.1, "cpu"))
+            os.environ["OMP_NUM_THREADS"] = "4"
+            explicit = storage.identity(video, model, 0.1, "cpu")
+            self.assertEqual("4", explicit["threads"]["OMP_NUM_THREADS"])
+            self.assertNotEqual(first, explicit)
+
+    def test_real_worker_entry_point_preserves_precollection_identity(self):
+        video, model = self.root / "v", self.root / "m"
+        video.write_bytes(b"video")
+        model.write_bytes(b"model")
+        # Exercise the real worker entry point in a fresh process. Replace only
+        # inference, including the environment mutation that exposed this bug.
+        script = """
+import os
+import runpy
+import sys
+from milk_vision.observations import collector
+from milk_vision.types import FrameObservations, VideoObservations
+
+def collect(*args, **kwargs):
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '2'
+    return VideoObservations(
+        {'fps': 10, 'frame_count': 1, 'duration_seconds': 0.1},
+        (FrameObservations(0, 0, 100, 100, (), ()),),
+    )
+
+collector.collect_video = collect
+sys.argv = ['storage', *sys.argv[1:]]
+runpy.run_module('milk_vision.observations.storage', run_name='__main__')
+"""
+        with mock.patch.dict(os.environ):
+            os.environ.pop("OMP_NUM_THREADS", None)
+            os.environ.pop("MKL_NUM_THREADS", None)
+            fingerprint = storage.identity(video, model, 0.1, "cpu")
+            path = self.root / "cache" / storage.digest(fingerprint) / "1.json"
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(Path(storage.__file__).resolve().parents[2])
+            result = subprocess.run(
+                [
+                    sys.executable, "-c", script, str(video), str(model),
+                    str(path), "0.1", "cpu",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            loaded, details = storage.get_observations(
+                video, model, device="cpu", cache_dir=self.root / "cache", worker=True
+            )
+            self.assertTrue(details["cache_hit"])
+            self.assertEqual((), loaded.frames[0].raw)
 
     def test_all_methods_reuse_one_collection_and_prediction_cache_resumes(self):
         obs = observations()

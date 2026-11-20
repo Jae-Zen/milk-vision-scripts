@@ -41,6 +41,10 @@ def file_hash(path: Path) -> str:
 
 
 def identity(video: Path, model: Path, confidence: float, device: str | None) -> dict:
+    # Ultralytics applies this default on import. Apply it before fingerprinting
+    # so the parent and fresh worker inherit the same effective setting.
+    if not os.environ.get("OMP_NUM_THREADS"):
+        os.environ["OMP_NUM_THREADS"] = "1"
     return {
         "video_sha256": file_hash(video),
         "model_sha256": file_hash(model),
@@ -222,6 +226,7 @@ if __name__ == "__main__":
     video, model, output = map(Path, sys.argv[1:4])
     confidence = float(sys.argv[4])
     device = sys.argv[5] if len(sys.argv) > 5 else None
+    fingerprint = identity(video, model, confidence, device)
     save(
         output,
         collect_video(
@@ -231,5 +236,5 @@ if __name__ == "__main__":
             device,
             status=lambda message: print(message, file=sys.stderr),
         ),
-        identity(video, model, confidence, device),
+        fingerprint,
     )

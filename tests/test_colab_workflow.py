@@ -71,7 +71,7 @@ class ColabWorkflowTests(unittest.TestCase):
         for flags in itertools.product((False, True), repeat=3):
             expected = [
                 name
-                for name, enabled in zip(("placement", "motion", "jev"), flags)
+                for name, enabled in zip(("placement", "motion", "jev"), flags, strict=True)
                 if enabled
             ]
             if not expected:
